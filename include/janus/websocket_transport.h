@@ -1,18 +1,17 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
-
-struct lws_context;
-struct lws;
+#include <vector>
 
 namespace xrtc {
 
-/// libwebsockets 客户端传输（独立服务线程，无 Qt）
+/// 纯 Winsock WebSocket 客户端（不依赖 libwebsockets，无 Qt）
 class WebsocketTransport {
 public:
     using MessageCallback = std::function<void(const std::string&)>;
@@ -32,6 +31,17 @@ public:
     void send_text(const std::string& text);
     void close();
 
+private:
+    void service_loop();
+    bool parse_url(const std::string& url);
+    bool tcp_connect();
+    bool ws_handshake();
+    bool send_frame(const std::string& text);
+    bool recv_some();
+    void drain_frames();
+    void notify_error(const std::string& err);
+    void sock_close();
+
     MessageCallback on_message_;
     VoidCallback on_connected_;
     VoidCallback on_disconnected_;
@@ -39,16 +49,9 @@ public:
 
     std::mutex mutex_;
     std::queue<std::string> send_queue_;
-    lws* wsi_ = nullptr;
-    std::atomic<bool> connected_{false};
-
-private:
-    void service_loop();
-    bool parse_url(const std::string& url);
-    void request_writable();
 
     std::thread thread_;
-    lws_context* context_ = nullptr;
+    std::uintptr_t sock_ = ~static_cast<std::uintptr_t>(0);  // INVALID_SOCKET
 
     std::string address_;
     std::string path_;
@@ -56,8 +59,12 @@ private:
     bool use_ssl_ = false;
     std::string protocol_ = "janus-protocol";
 
-    std::atomic<bool> running_{false};
+    std::vector<char> rx_buf_;
+
+    std::atomic<bool> connected_{false};
     std::atomic<bool> destroy_flag_{false};
+    std::atomic<bool> error_notified_{false};
+    std::atomic<bool> running_{false};
 };
 
 }  // namespace xrtc

@@ -68,9 +68,23 @@ public:
         webrtc::PeerConnectionInterface::PeerConnectionState new_state) override;
 
 private:
+    friend class RemoteSetObserver;
+
+    struct PendingIceCandidate {
+        std::string sdp_mid;
+        int mline_index = 0;
+        std::string candidate;
+    };
+
+    void ApplyIceCandidate(const std::string& sdp_mid, int mline_index,
+                           const std::string& candidate);
+    void FlushPendingIceCandidates();
+
     webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc_;
     Callbacks callbacks_;
+    bool remote_description_set_ = false;
+    std::vector<PendingIceCandidate> pending_remote_candidates_;
 };
 
 }  // namespace xrtc

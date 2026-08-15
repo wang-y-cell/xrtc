@@ -24,14 +24,15 @@ XRtcGlobal& XRtcGlobal::instance() {
 
 XRtcGlobal::XRtcGlobal()
     : api_thread_(webrtc::Thread::Create()),
-      worker_thread_(webrtc::Thread::Create()),
-      network_thread_(webrtc::Thread::CreateWithSocketServer()) {
+      worker_thread_(webrtc::Thread::Create()) {
     api_thread_->SetName("api_thread", nullptr);
     api_thread_->Start();
     worker_thread_->SetName("worker_thread", nullptr);
     worker_thread_->Start();
-    network_thread_->SetName("network_thread", nullptr);
-    network_thread_->Start();
+    /*
+     * network_thread 延迟到创建 PeerConnectionFactory 时再启动
+     *（避免过早拉起 PhysicalSocketServer）。
+     */
 }
 
 XRtcGlobal::~XRtcGlobal() {
@@ -41,7 +42,9 @@ XRtcGlobal::~XRtcGlobal() {
     });
     api_thread_->Stop();
     worker_thread_->Stop();
-    network_thread_->Stop();
+    if (network_thread_) {
+        network_thread_->Stop();
+    }
 }
 
 void XRtcGlobal::InitAudioDeviceModule(
@@ -53,6 +56,17 @@ webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface>
 XRtcGlobal::GetOrCreatePeerConnectionFactory() {
     if (pc_factory_) {
         return pc_factory_;
+    }
+
+    if (!network_thread_) {
+        network_thread_ = webrtc::Thread::CreateWithSocketServer();
+        network_thread_->SetName("network_thread", nullptr);
+        network_thread_->Start();
+        RTC_LOG(LS_INFO) << "network_thread started (deferred until PC factory)";
+    }
+
+    if (adm_) {
+        adm_->Init();
     }
 
     pc_factory_ = webrtc::CreatePeerConnectionFactory(

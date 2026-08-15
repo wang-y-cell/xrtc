@@ -88,11 +88,15 @@ private:
     PeerConnectionHandler::Callbacks callbacks_;
 };
 
+}  // namespace
+
+// Janus full-trickle 常在 answer 之前下发 candidate；须排队等 SetRemote 完成。
 class RemoteSetObserver
     : public webrtc::SetRemoteDescriptionObserverInterface {
 public:
-    explicit RemoteSetObserver(PeerConnectionHandler::Callbacks callbacks)
-        : callbacks_(std::move(callbacks)) {}
+    RemoteSetObserver(PeerConnectionHandler* handler,
+                      PeerConnectionHandler::Callbacks callbacks)
+        : handler_(handler), callbacks_(std::move(callbacks)) {}
 
     void OnSetRemoteDescriptionComplete(webrtc::RTCError error) override {
         if (!error.ok()) {
@@ -102,14 +106,18 @@ public:
                 callbacks_.on_error(std::string("SetRemote: ") +
                                     error.message());
             }
+            return;
+        }
+        if (handler_ && handler_->pc_) {
+            handler_->remote_description_set_ = true;
+            handler_->FlushPendingIceCandidates();
         }
     }
 
 private:
+    PeerConnectionHandler* handler_;
     PeerConnectionHandler::Callbacks callbacks_;
 };
-
-}  // namespace
 
 PeerConnectionHandler::PeerConnectionHandler(
     webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory,
@@ -156,6 +164,8 @@ bool PeerConnectionHandler::Init(
 }
 
 void PeerConnectionHandler::Close() {
+    pending_remote_candidates_.clear();
+    remote_description_set_ = false;
     if (pc_) {
         pc_->Close();
         pc_ = nullptr;
@@ -215,14 +225,30 @@ void PeerConnectionHandler::SetRemoteDescription(const std::string& type,
         }
         return;
     }
-    pc_->SetRemoteDescription(std::move(desc),
-                              webrtc::make_ref_counted<RemoteSetObserver>(
-                                  callbacks_));
+    pc_->SetRemoteDescription(
+        std::move(desc),
+        webrtc::make_ref_counted<RemoteSetObserver>(this, callbacks_));
 }
 
 void PeerConnectionHandler::AddIceCandidate(const std::string& sdp_mid,
                                             int mline_index,
                                             const std::string& candidate) {
+    if (!pc_ || candidate.empty()) {
+        return;
+    }
+    if (!remote_description_set_) {
+        RTC_LOG(LS_INFO) << "Queue remote ICE candidate until SetRemoteDescription: "
+                         << candidate.substr(0, 80);
+        pending_remote_candidates_.push_back(
+            PendingIceCandidate{sdp_mid, mline_index, candidate});
+        return;
+    }
+    ApplyIceCandidate(sdp_mid, mline_index, candidate);
+}
+
+void PeerConnectionHandler::ApplyIceCandidate(const std::string& sdp_mid,
+                                              int mline_index,
+                                              const std::string& candidate) {
     if (!pc_ || candidate.empty()) {
         return;
     }
@@ -233,7 +259,24 @@ void PeerConnectionHandler::AddIceCandidate(const std::string& sdp_mid,
         RTC_LOG(LS_WARNING) << "CreateIceCandidate failed: " << error.description;
         return;
     }
-    pc_->AddIceCandidate(ice.get());
+    if (!pc_->AddIceCandidate(ice.get())) {
+        RTC_LOG(LS_WARNING) << "AddIceCandidate rejected: " << candidate.substr(0, 80);
+    } else {
+        RTC_LOG(LS_INFO) << "AddIceCandidate ok: " << candidate.substr(0, 80);
+    }
+}
+
+void PeerConnectionHandler::FlushPendingIceCandidates() {
+    if (pending_remote_candidates_.empty()) {
+        return;
+    }
+    RTC_LOG(LS_INFO) << "Flushing " << pending_remote_candidates_.size()
+                     << " queued remote ICE candidate(s)";
+    auto pending = std::move(pending_remote_candidates_);
+    pending_remote_candidates_.clear();
+    for (const auto& c : pending) {
+        ApplyIceCandidate(c.sdp_mid, c.mline_index, c.candidate);
+    }
 }
 
 void PeerConnectionHandler::MuteAudio(bool mute) {
@@ -276,6 +319,15 @@ void PeerConnectionHandler::OnIceCandidate(
     }
     std::string cand;
     candidate->ToString(&cand);
+    // Janus 本机关闭了 IPv6；跳过无用的 IPv6 candidate
+    const auto typ_pos = cand.find(" typ ");
+    const std::string head =
+        typ_pos == std::string::npos ? cand : cand.substr(0, typ_pos);
+    if (head.find(':') != std::string::npos &&
+        head.find('.') == std::string::npos) {
+        RTC_LOG(LS_INFO) << "Skip IPv6 ICE candidate: " << cand.substr(0, 80);
+        return;
+    }
     callbacks_.on_ice_candidate(candidate->sdp_mid(),
                                 candidate->sdp_mline_index(), cand);
 }

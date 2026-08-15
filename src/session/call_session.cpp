@@ -122,7 +122,15 @@ void CallSession::setupJanusCallbacks() {
     };
     cb.on_error = [this](const std::string& err) {
         XRtcGlobal::instance().api_thread()->PostTask([this, err]() {
-            notifyJoinResult(XRtcError::kSignalingFailed, err);
+            spdlog::error("[session] signaling error: {}", err);
+            active_ = false;
+            // 失败后必须拆掉 WS，否则 service 线程会一直空转 heartbeat
+            if (janus_) {
+                janus_->Disconnect();
+            }
+            const std::string msg =
+                err.empty() ? "signaling failed (empty detail)" : err;
+            notifyJoinResult(XRtcError::kSignalingFailed, msg);
         });
     };
     cb.on_destroyed = []() { spdlog::info("Janus connection destroyed"); };
@@ -146,12 +154,11 @@ void CallSession::Start(const XRTCJoinConfig& config) {
 }
 
 void CallSession::Stop() {
-    if (!active_ && !publisher_pc_ && !capture_) {
-        return;
-    }
     active_ = false;
 
-    janus_->Disconnect();
+    if (janus_) {
+        janus_->Disconnect();
+    }
 
     auto cleanup = [this]() {
         publisher_pc_.reset();
@@ -197,6 +204,9 @@ void CallSession::MuteVideo(bool mute) {
 
 void CallSession::notifyJoinResult(XRtcError error,
                                    const std::string& message) {
+    if (join_notified_) {
+        return;
+    }
     join_notified_ = true;
     if (auto* obs = XRtcGlobal::instance().observer()) {
         obs->on_join_result(error, message);
@@ -275,12 +285,15 @@ void CallSession::createPublisherPc() {
 }
 
 void CallSession::onJoinedAsPublisher() {
+    spdlog::info("[session] onJoinedAsPublisher: starting local media + PC");
     if (!ensureLocalMedia()) {
+        spdlog::error("[session] ensureLocalMedia failed");
         notifyJoinResult(XRtcError::kMediaStartFailed,
                          "failed to start local media");
         return;
     }
     createPublisherPc();
+    spdlog::info("[session] notify join success");
     notifyJoinResult(XRtcError::kNOERROR, "joined");
 }
 

@@ -26,7 +26,7 @@
      <item>
       <widget class="QLineEdit" name="janus_url">
        <property name="text">
-        <string>ws://127.0.0.1:8188/</string>
+        <string>ws://8.153.155.18:8188/</string>
        </property>
       </widget>
      </item>

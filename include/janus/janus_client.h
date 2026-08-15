@@ -85,6 +85,7 @@ private:
     void on_ws_disconnected();
     void handle_success(const json& msg);
     void handle_event(const json& msg);
+    void handle_trickle(const json& msg);
     void create_session();
     void attach_publisher();
     void join_as_publisher();

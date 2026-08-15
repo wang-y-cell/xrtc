@@ -28,6 +28,8 @@ void JanusClient::set_callbacks(Callbacks callbacks) {
 }
 
 void JanusClient::Connect(const XRTCJoinConfig& config) {
+    spdlog::info("[janus] Connect url={} room={} display={}",
+                 config.janus_ws_url, config.room_id, config.display_name);
     config_ = config;
     session_id_ = 0;
     pub_handle_ = 0;
@@ -38,6 +40,7 @@ void JanusClient::Connect(const XRTCJoinConfig& config) {
         tx_feeds_.clear();
     }
     if (!transport_->open(config.janus_ws_url)) {
+        spdlog::error("[janus] transport open failed");
         if (callbacks_.on_error) {
             callbacks_.on_error("failed to open websocket");
         }
@@ -65,7 +68,9 @@ void JanusClient::Disconnect() {
 }
 
 void JanusClient::send_json(const json& obj) {
-    transport_->send_text(obj.dump());
+    const std::string text = obj.dump();
+    spdlog::info("[janus] TX {}", text.substr(0, 400));
+    transport_->send_text(text);
 }
 
 std::string JanusClient::new_transaction() {
@@ -226,6 +231,7 @@ void JanusClient::parse_jsep(const json& msg, JanusJsep* out) {
 }
 
 void JanusClient::on_ws_message(const std::string& text) {
+    spdlog::info("[janus] RX {}", text.substr(0, 500));
     json msg;
     try {
         msg = json::parse(text);
@@ -235,15 +241,25 @@ void JanusClient::on_ws_message(const std::string& text) {
     }
 
     const std::string janus = msg.value("janus", "");
+    spdlog::info("[janus] message type={}", janus);
     if (janus == "success") {
         handle_success(msg);
     } else if (janus == "event") {
         handle_event(msg);
+    } else if (janus == "trickle") {
+        handle_trickle(msg);
+    } else if (janus == "hangup") {
+        const std::string reason = msg.value("reason", "hangup");
+        spdlog::warn("[janus] hangup: {}", reason);
+        if (callbacks_.on_error) {
+            callbacks_.on_error(std::string("hangup: ") + reason);
+        }
     } else if (janus == "error" || janus == "timeout") {
         std::string reason = janus;
         if (msg.contains("error") && msg["error"].is_object()) {
             reason = msg["error"].value("reason", janus);
         }
+        spdlog::error("[janus] gateway {}: {}", janus, reason);
         if (callbacks_.on_error) {
             callbacks_.on_error(reason);
         }
@@ -394,6 +410,27 @@ void JanusClient::handle_event(const json& msg) {
                                            cand.value("sdpMLineIndex", 0),
                                            cand.value("candidate", ""));
         }
+    }
+}
+
+void JanusClient::handle_trickle(const json& msg) {
+    // 顶层 janus=trickle（full-trickle），sender 即 handle_id
+    const uint64_t handle_id = msg.value("sender", static_cast<uint64_t>(0));
+    if (!msg.contains("candidate")) {
+        return;
+    }
+    const auto& cand = msg.at("candidate");
+    if (cand.value("completed", false)) {
+        spdlog::info("[janus] remote trickle completed handle={}", handle_id);
+        return;
+    }
+    const std::string mid = cand.value("sdpMid", "");
+    const int idx = cand.value("sdpMLineIndex", 0);
+    const std::string candidate = cand.value("candidate", "");
+    spdlog::info("[janus] remote trickle handle={} mid={} idx={} cand={}",
+                 handle_id, mid, idx, candidate.substr(0, 120));
+    if (callbacks_.on_remote_candidate && !candidate.empty()) {
+        callbacks_.on_remote_candidate(handle_id, mid, idx, candidate);
     }
 }
 

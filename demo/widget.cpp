@@ -7,8 +7,10 @@
 #include <QResizeEvent>
 #include <QString>
 
+#include <spdlog/spdlog.h>
+
 namespace {
-// 按钮样式：停止时红色、启动时蓝我如何查看你修改的代码色
+// 按钮样式：停止时红色、启动时蓝色
 const QString btnStop = "background-color:#d84a38";
 const QString btnStart = "background-color:#007aac";
 
@@ -211,13 +213,28 @@ void Widget::join_meeting() {
     }
 
     xrtc::XRTCJoinConfig config;
-    config.janus_ws_url = ui->janus_url->text().trimmed().toStdString();
+    // Windows 下 toStdString() 可能走本地代码页；URL/名字用 UTF-8
+    config.janus_ws_url =
+        ui->janus_url->text().trimmed().toUtf8().constData();
     config.room_id = ui->room_id->text().trimmed().toULongLong();
-    config.display_name = ui->display_name->text().trimmed().toStdString();
+    config.display_name =
+        ui->display_name->text().trimmed().toUtf8().constData();
     const int index = ui->camera_list->currentIndex();
     if (index >= 0 && index < static_cast<int>(video_devices_.size())) {
         config.video_device_id = video_devices_[index].device_id;
     }
+
+    // 本机 coturn（勿留空，否则会退回 Google STUN）
+    config.ice_servers.push_back(
+        {"stun:8.153.155.18:3478", "", ""});
+    config.ice_servers.push_back(
+        {"turn:8.153.155.18:3478", "wang_y", "wang_y"});
+    config.ice_servers.push_back(
+        {"turn:8.153.155.18:3478?transport=tcp", "wang_y", "wang_y"});
+
+    spdlog::info("[ui] join_meeting url={} room={} name={} ice={}",
+                 config.janus_ws_url, config.room_id, config.display_name,
+                 config.ice_servers.size());
 
     ui->status_label->setText(QString::fromUtf8("状态: joining..."));
     ui->btn_join->setEnabled(false);
@@ -333,6 +350,8 @@ void Widget::render_preview_frame() {
  * 失败则提示错误信息。
  */
 void Widget::on_join_result(xrtc::XRtcError error, const std::string& message) {
+    spdlog::info("[ui] on_join_result error={} msg={}", static_cast<int>(error),
+                 message);
     QMetaObject::invokeMethod(
         this,
         [this, error, message]() {

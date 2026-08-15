@@ -20,28 +20,8 @@ add_library(spdlog_header INTERFACE)
 target_include_directories(spdlog_header INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog/include)
 
-# ---------- third_party: libwebsockets（精简为 WS 客户端） ----------
-set(LWS_WITH_SSL OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_SCHANNEL OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_TLS_SESSIONS OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_LHP OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_DLO OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_UPNG OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_JPEG OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_SECURE_STREAMS OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_SHARED OFF CACHE BOOL "" FORCE)
-set(LWS_WITH_STATIC ON CACHE BOOL "" FORCE)
-set(LWS_WITHOUT_TESTAPPS ON CACHE BOOL "" FORCE)
-set(LWS_WITHOUT_TEST_SERVER ON CACHE BOOL "" FORCE)
-set(LWS_WITHOUT_TEST_CLIENT ON CACHE BOOL "" FORCE)
-set(LWS_WITHOUT_TEST_PING ON CACHE BOOL "" FORCE)
-set(LWS_WITH_MINIMAL_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(LWS_WITHOUT_EXTENSIONS ON CACHE BOOL "" FORCE)
-set(LWS_WITH_ZIP_FOPS OFF CACHE BOOL "" FORCE)
-set(DISABLE_WERROR ON CACHE BOOL "" FORCE)
-add_subdirectory(third_party/libwebsockets EXCLUDE_FROM_ALL)
-
 # ---------- xrtc SDK (no Qt) ----------
+# 信令 WebSocket 使用 Winsock 实现，不再依赖 libwebsockets
 # include/<module>/*.h 与 src/<module>/*.cpp 一一对应
 add_library(xrtc STATIC
     src/engine/xrtc_global.cpp
@@ -72,7 +52,6 @@ target_link_libraries(xrtc
     PRIVATE
         nlohmann_json
         spdlog_header
-        websockets
         ws2_32
         winmm
         strmiids
@@ -111,6 +90,7 @@ qt_add_executable(webrtc_test
 target_link_libraries(webrtc_test
     PRIVATE
         xrtc
+        spdlog_header
         Qt::Core
         Qt::Widgets
 )

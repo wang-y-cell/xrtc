@@ -32,8 +32,11 @@ XRtcEngine::XRtcEngine()
       audio_device(webrtc::CreateAudioDeviceModule(
           webrtc::CreateEnvironment(),
           webrtc::AudioDeviceModule::kPlatformDefaultAudio)) {
+    /*
+     * 延迟 ADM Init：在 Windows 上过早 Init 麦克风可能干扰同进程
+     * libwebsockets 的 select() 连接检测。真正推流前再 Init。
+     */
     if (audio_device) {
-        audio_device->Init();
         XRtcGlobal::instance().InitAudioDeviceModule(audio_device);
     }
 }
@@ -75,14 +78,19 @@ std::vector<XRTCDeviceInfo> XRtcEngine::get_audio_device_info() {
             if (!audio_device) {
                 return device_info;
             }
-            uint32_t total = audio_device->RecordingDevices();
+            // 必须先 Init，否则 RecordingDevices() 可能返回垃圾值导致狂打日志
+            if (audio_device->Init() != 0) {
+                return device_info;
+            }
+            const int16_t total = audio_device->RecordingDevices();
             if (total <= 0) {
                 return device_info;
             }
-
+            // 防御：异常总数直接丢弃
+            const int count = (total > 32) ? 0 : static_cast<int>(total);
             char id[128];
             char name[128];
-            for (size_t i = 0; i < total; i++) {
+            for (int i = 0; i < count; ++i) {
                 id[0] = '\0';
                 name[0] = '\0';
                 if (audio_device->RecordingDeviceName(i, name, id) == 0) {

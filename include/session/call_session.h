@@ -2,14 +2,17 @@
 
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "api/scoped_refptr.h"
+#include "component/signal_and_slots/signal_and_slots.h"
 #include <janus/janus_client.h>
 #include <media/remote_video_sink.h>
 #include <media/vcm_capture.h>
 #include <media/video_track_source.h>
 #include <pc/peer_connection.h>
 #include <xrtc/ixrtc_engine.h>
+#include <xrtc/xrtc_result.h>
 
 namespace xrtc {
 
@@ -32,9 +35,9 @@ public:
 
 private:
     void notifyJoinResult(XRtcError error, const std::string& message);
-    void setupJanusCallbacks();
+    void bindJanusSignals();
     void onJoinedAsPublisher();
-    bool ensureLocalMedia();
+    XRtcStatus ensureLocalMedia();
     void createPublisherPc();
     void subscribeFeed(const JanusPublisherInfo& info);
     void onPublisherLocalSdp(const std::string& type, const std::string& sdp);
@@ -49,6 +52,7 @@ private:
     bool join_notified_ = false;
 
     std::unique_ptr<JanusClient> janus_;
+    std::vector<utils::scoped_connection> janus_conns_;
 
     VcmCapture* capture_ = nullptr;
     webrtc::scoped_refptr<XrtcVideoTrackSource> video_source_;

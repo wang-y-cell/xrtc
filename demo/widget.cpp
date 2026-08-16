@@ -7,7 +7,7 @@
 #include <QResizeEvent>
 #include <QString>
 
-#include <spdlog/spdlog.h>
+#include <xrtc/xrtc_log.h>
 
 namespace {
 // 按钮样式：停止时红色、启动时蓝色
@@ -232,7 +232,7 @@ void Widget::join_meeting() {
     config.ice_servers.push_back(
         {"turn:8.153.155.18:3478?transport=tcp", "wang_y", "wang_y"});
 
-    spdlog::info("[ui] join_meeting url={} room={} name={} ice={}",
+    utils::log::info("[ui] join_meeting url={} room={} name={} ice={}",
                  config.janus_ws_url, config.room_id, config.display_name,
                  config.ice_servers.size());
 
@@ -350,7 +350,7 @@ void Widget::render_preview_frame() {
  * 失败则提示错误信息。
  */
 void Widget::on_join_result(xrtc::XRtcError error, const std::string& message) {
-    spdlog::info("[ui] on_join_result error={} msg={}", static_cast<int>(error),
+    utils::log::info("[ui] on_join_result error={} msg={}", static_cast<int>(error),
                  message);
     QMetaObject::invokeMethod(
         this,

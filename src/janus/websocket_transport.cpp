@@ -4,7 +4,6 @@
 #include <chrono>
 #include <deque>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -14,7 +13,8 @@
 #include <boost/asio/post.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
-#include <spdlog/spdlog.h>
+
+#include <xrtc/xrtc_log.h>
 
 namespace xrtc {
 namespace {
@@ -28,10 +28,7 @@ using tcp = net::ip::tcp;
 }  // namespace
 
 struct WebsocketTransport::Impl {
-    MessageCallback on_message;
-    VoidCallback on_connected;
-    VoidCallback on_disconnected;
-    ErrorCallback on_error;
+    WebsocketTransport* owner = nullptr;
 
     std::string address;
     std::string path = "/";
@@ -40,7 +37,6 @@ struct WebsocketTransport::Impl {
     bool use_ssl = false;
     std::string protocol = "janus-protocol";
 
-    // 每次 open 新建，避免 restart 后残留 stop/cancel 回调立刻结束 run()
     std::unique_ptr<net::io_context> ioc;
     std::unique_ptr<websocket::stream<beast::tcp_stream>> ws;
     beast::flat_buffer read_buf;
@@ -51,21 +47,15 @@ struct WebsocketTransport::Impl {
     std::atomic<bool> connected{false};
     std::atomic<bool> closing{false};
     std::atomic<bool> error_notified{false};
-    std::mutex cb_mutex;
 
     void notify_error(const std::string& err) {
         bool expected = false;
         if (!error_notified.compare_exchange_strong(expected, true)) {
             return;
         }
-        spdlog::error("[ws] ERROR: {}", err);
-        ErrorCallback cb;
-        {
-            std::lock_guard<std::mutex> lock(cb_mutex);
-            cb = on_error;
-        }
-        if (cb) {
-            cb(err);
+        utils::log::error("[ws] ERROR: {}", err);
+        if (owner) {
+            owner->error.emit(err);
         }
     }
 
@@ -115,7 +105,6 @@ struct WebsocketTransport::Impl {
         if (closing.load()) {
             return;
         }
-        // operation_aborted 常见于主动 close/cancel，不当作成连接失败
         if (ec == net::error::operation_aborted) {
             return;
         }
@@ -131,17 +120,10 @@ struct WebsocketTransport::Impl {
 
     void notify_disconnected_if_needed() {
         const bool was_connected = connected.exchange(false);
-        if (!was_connected) {
+        if (!was_connected || !owner) {
             return;
         }
-        VoidCallback cb;
-        {
-            std::lock_guard<std::mutex> lock(cb_mutex);
-            cb = on_disconnected;
-        }
-        if (cb) {
-            cb();
-        }
+        owner->disconnected.emit();
     }
 
     void on_resolve(beast::error_code ec, tcp::resolver::results_type results) {
@@ -167,10 +149,9 @@ struct WebsocketTransport::Impl {
         if (ec) {
             return fail(ec, "connect");
         }
-        spdlog::info("[ws] TCP connected {}:{}", address, port);
+        utils::log::info("[ws] TCP connected {}:{}", address, port);
 
         beast::get_lowest_layer(*ws).expires_never();
-        // 关闭 idle timeout，避免 Janus 静默期被 Beast 主动掐断
         websocket::stream_base::timeout opt{};
         opt.handshake_timeout = std::chrono::seconds(30);
         opt.idle_timeout = websocket::stream_base::none();
@@ -191,16 +172,11 @@ struct WebsocketTransport::Impl {
         if (ec) {
             return fail(ec, "handshake");
         }
-        spdlog::info("[ws] WebSocket ESTABLISHED proto={}", protocol);
+        utils::log::info("[ws] WebSocket ESTABLISHED proto={}", protocol);
         connected = true;
 
-        VoidCallback cb;
-        {
-            std::lock_guard<std::mutex> lock(cb_mutex);
-            cb = on_connected;
-        }
-        if (cb) {
-            cb();
+        if (owner) {
+            owner->connected.emit();
         }
         if (!write_queue.empty()) {
             do_write();
@@ -226,16 +202,11 @@ struct WebsocketTransport::Impl {
 
         const std::string payload = beast::buffers_to_string(read_buf.data());
         read_buf.consume(read_buf.size());
-        spdlog::info("[ws] RX {} bytes: {}", payload.size(),
-                     payload.substr(0, 300));
+        utils::log::info("[ws] RX {} bytes: {}", payload.size(),
+                         payload.substr(0, 300));
 
-        MessageCallback cb;
-        {
-            std::lock_guard<std::mutex> lock(cb_mutex);
-            cb = on_message;
-        }
-        if (cb) {
-            cb(payload);
+        if (owner) {
+            owner->message.emit(payload);
         }
         do_read();
     }
@@ -273,8 +244,8 @@ struct WebsocketTransport::Impl {
             }
             return fail(ec, "write");
         }
-        spdlog::info("[ws] TX {} bytes: {}", write_queue.front().size(),
-                     write_queue.front().substr(0, 300));
+        utils::log::info("[ws] TX {} bytes: {}", write_queue.front().size(),
+                         write_queue.front().substr(0, 300));
         write_queue.pop_front();
         if (!write_queue.empty()) {
             do_write();
@@ -284,7 +255,7 @@ struct WebsocketTransport::Impl {
     }
 
     void service_loop() {
-        spdlog::info("[ws] service_loop enter");
+        utils::log::info("[ws] service_loop enter");
         try {
             auto resolver = std::make_shared<tcp::resolver>(*ioc);
             ws = std::make_unique<websocket::stream<beast::tcp_stream>>(*ioc);
@@ -303,8 +274,6 @@ struct WebsocketTransport::Impl {
             }
         }
 
-        // 尚未连上就退出（例如残留 stop / 被拒后二次 open 失败）必须上报，
-        // 否则 UI 会一直停在 joining...
         if (!closing.load() && !connected.load() && !error_notified.load()) {
             notify_error("websocket stopped before connected");
         }
@@ -313,41 +282,33 @@ struct WebsocketTransport::Impl {
         ws.reset();
         write_queue.clear();
         writing = false;
-        spdlog::info("[ws] service_loop exit");
+        utils::log::info("[ws] service_loop exit");
     }
 };
 
-WebsocketTransport::WebsocketTransport() : impl_(std::make_unique<Impl>()) {}
+WebsocketTransport::WebsocketTransport()
+    : impl_(std::make_unique<Impl>()) {
+    impl_->owner = this;
+}
 
 WebsocketTransport::~WebsocketTransport() {
     close();
 }
 
-void WebsocketTransport::set_callbacks(MessageCallback on_message,
-                                       VoidCallback on_connected,
-                                       VoidCallback on_disconnected,
-                                       ErrorCallback on_error) {
-    std::lock_guard<std::mutex> lock(impl_->cb_mutex);
-    impl_->on_message = std::move(on_message);
-    impl_->on_connected = std::move(on_connected);
-    impl_->on_disconnected = std::move(on_disconnected);
-    impl_->on_error = std::move(on_error);
-}
-
-bool WebsocketTransport::open(const std::string& url) {
-    spdlog::info("[ws] open url={}", url);
+XRtcStatus WebsocketTransport::open(const std::string& url) {
+    utils::log::info("[ws] open url={}", url);
     close();
 
     if (!impl_->parse_url(url)) {
-        spdlog::info("[ws] invalid url");
-        return false;
+        utils::log::info("[ws] invalid url");
+        return xrtc_err(XRtcError::kInvalidParam);
     }
     if (impl_->use_ssl) {
         impl_->notify_error("wss not supported (Boost.Beast without OpenSSL)");
-        return false;
+        return xrtc_err(XRtcError::kSignalingFailed);
     }
-    spdlog::info("[ws] parsed host={} port={} path={}", impl_->address,
-                 impl_->port, impl_->path);
+    utils::log::info("[ws] parsed host={} port={} path={}", impl_->address,
+                     impl_->port, impl_->path);
 
     impl_->closing = false;
     impl_->error_notified = false;
@@ -356,11 +317,10 @@ bool WebsocketTransport::open(const std::string& url) {
     impl_->write_queue.clear();
     impl_->read_buf.clear();
     impl_->ws.reset();
-    // 关键全新 io_context，杜绝上次 stop 残留回调
     impl_->ioc = std::make_unique<net::io_context>();
 
     impl_->thread = std::thread([this]() { impl_->service_loop(); });
-    return true;
+    return xrtc_ok();
 }
 
 void WebsocketTransport::send_text(const std::string& text) {
@@ -378,7 +338,6 @@ void WebsocketTransport::close() {
     }
 
     impl_->closing = true;
-    // stop() 线程安全；不要 post 残留回调到下次 open 的 context
     if (impl_->ioc) {
         impl_->ioc->stop();
     }

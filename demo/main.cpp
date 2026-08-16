@@ -9,6 +9,9 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include "spdlog_log_backend.h"
+#include <xrtc/xrtc_log.h>
+
 namespace {
 
 void InitLogging() {
@@ -24,7 +27,9 @@ void InitLogging() {
         logger->flush_on(spdlog::level::info);
         logger->set_pattern("[%H:%M:%S.%e] [%l] %v");
         spdlog::set_default_logger(logger);
-        spdlog::info("logging ready (console + xrtc_debug.log)");
+
+        xrtc::InitXrtcLoggingWithSpdlog();
+        utils::log::info("logging ready (console + xrtc_debug.log)");
     } catch (const std::exception& e) {
         std::fprintf(stderr, "spdlog init failed: %s\n", e.what());
     }

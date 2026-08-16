@@ -15,10 +15,13 @@ add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/json/single_include)
 
-# ---------- third_party: spdlog (header-only) ----------
+# ---------- third_party: spdlog (header-only, demo log backend only) ----------
 add_library(spdlog_header INTERFACE)
 target_include_directories(spdlog_header INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog/include)
+
+# ---------- utils framework (header-only: signal / result / log) ----------
+add_subdirectory(utils EXCLUDE_FROM_ALL)
 
 # ---------- Boost (Beast/Asio header-only WebSocket) ----------
 # 本机安装：F:/wy/boost_install（MinGW 编译的 .dll 仅 header-only 组件可与 MSVC 共用）
@@ -60,9 +63,9 @@ target_link_directories(xrtc PUBLIC ${WETC_LIB})
 target_link_libraries(xrtc
     PUBLIC
         webrtc
+        utils::utils
     PRIVATE
         nlohmann_json
-        spdlog_header
         Boost::headers
         ws2_32
         winmm

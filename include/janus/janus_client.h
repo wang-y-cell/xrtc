@@ -2,7 +2,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -12,8 +11,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include "component/signal_and_slots/signal_and_slots.h"
 #include <janus/websocket_transport.h>
 #include <xrtc/xrtc_defines.h>
+#include <xrtc/xrtc_result.h>
 
 namespace xrtc {
 
@@ -29,32 +30,22 @@ struct JanusPublisherInfo {
 
 class JanusClient {
 public:
-    struct Callbacks {
-        std::function<void()> on_joined_as_publisher;
-        std::function<void(const std::vector<JanusPublisherInfo>&)>
-            on_publishers;
-        std::function<void(uint64_t feed_id, const std::string& display)>
-            on_publisher_left;
-        std::function<void(const JanusJsep& jsep)> on_publisher_answer;
-        std::function<void(uint64_t feed_id, uint64_t handle_id,
-                           const JanusJsep& offer)>
-            on_subscriber_offer;
-        std::function<void(uint64_t handle_id, const std::string& sdp_mid,
-                           int mline_index, const std::string& candidate)>
-            on_remote_candidate;
-        std::function<void(const std::string& error)> on_error;
-        std::function<void()> on_destroyed;
-    };
-
     JanusClient();
     ~JanusClient();
 
     JanusClient(const JanusClient&) = delete;
     JanusClient& operator=(const JanusClient&) = delete;
 
-    void set_callbacks(Callbacks callbacks);
+    utils::signal<> joined_as_publisher;
+    utils::signal<std::vector<JanusPublisherInfo>> publishers;
+    utils::signal<uint64_t, std::string> publisher_left;
+    utils::signal<JanusJsep> publisher_answer;
+    utils::signal<uint64_t, uint64_t, JanusJsep> subscriber_offer;
+    utils::signal<uint64_t, std::string, int, std::string> remote_candidate;
+    utils::signal<std::string> error;
+    utils::signal<> destroyed;
 
-    void Connect(const XRTCJoinConfig& config);
+    XRtcStatus Connect(const XRTCJoinConfig& config);
     void Disconnect();
 
     void Publish(const JanusJsep& offer);
@@ -78,6 +69,7 @@ private:
         kAttachSub,
     };
 
+    void bind_transport_signals();
     void send_json(const json& obj);
     std::string new_transaction();
     void on_ws_connected();
@@ -95,7 +87,7 @@ private:
     void stop_keepalive();
 
     std::unique_ptr<WebsocketTransport> transport_;
-    Callbacks callbacks_;
+    std::vector<utils::scoped_connection> transport_conns_;
     XRTCJoinConfig config_;
 
     uint64_t session_id_ = 0;

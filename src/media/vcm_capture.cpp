@@ -7,6 +7,7 @@
 #include <engine/xrtc_global.h>
 #include <xrtc/ixrtc_engine.h>
 #include "libyuv/convert_argb.h"
+#include <xrtc/xrtc_log.h>
 
 namespace xrtc {
 
@@ -33,7 +34,8 @@ VcmCapture* VcmCapture::create(size_t width, size_t height, int fps,
 }
 
 void VcmCapture::set_track_source(
-    webrtc::scoped_refptr<XrtcVideoTrackSource> track_source) {
+    webrtc::scoped_refptr<XrtcVideoTrackSource> track_source
+) {
     track_source_ = std::move(track_source);
     if (track_source_) {
         track_source_->SetLive(true);
@@ -45,19 +47,16 @@ bool VcmCapture::start() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
-                RTC_LOG(LS_ERROR) << "Video capture module is not initialized";
+                log::error("视频采集模块未初始化");
                 error = XRtcError::kVideoSourceNotInit;
                 break;
             }
             if (_vcm->StartCapture(_capability) != 0) {
-                RTC_LOG(LS_WARNING)
-                    << "Failed to start capture, device_id: "
-                    << _vcm->CurrentDeviceName();
+                log::warn("开始采集失败, device_id: {}", _vcm->CurrentDeviceName());
                 error = XRtcError::kVideoSourceStartFailed;
                 break;
             }
-            RTC_LOG(LS_INFO) << "Successfully started capture, device_id: "
-                             << _vcm->CurrentDeviceName();
+            log::debug("开始采集成功, device_id: {}", _vcm->CurrentDeviceName());
         } while (false);
 
         XRtcEngineObserver* observer = XRtcGlobal::instance().observer();
@@ -73,7 +72,7 @@ bool VcmCapture::stop() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
-                RTC_LOG(LS_ERROR) << "Video capture module is not initialized";
+                log::error("视频采集模块未初始化");
                 error = XRtcError::kVideoSourceNotInit;
                 break;
             }
@@ -92,21 +91,30 @@ bool VcmCapture::stop() {
     return true;
 }
 
+/**
+ * @brief 初始化视频采集模块
+ * @param width 视频宽度
+ * @param height 视频高度
+ * @param fps 视频帧率
+ * @param device_id 设备id
+ * @return 是否成功
+*/
 bool VcmCapture::init(size_t width, size_t height, int fps,
                       const std::string& device_id) {
+    //根据设备id创建视频采集模块
     _vcm = webrtc::VideoCaptureFactory::Create(device_id.c_str());
     if (!_vcm) {
-        RTC_LOG(LS_ERROR)
-            << "Failed to create video capture module, device_id: "
-            << device_id;
+        log::error("创建视频采集模块失败, device_id: {}", device_id);
         return false;
     }
 
+    //注册视频采集数据回调,当有视频数据时，会回调OnFrame方法
     _vcm->RegisterCaptureDataCallback(this);
 
+    //获取视频采集设备信息
     std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> device_info(
         webrtc::VideoCaptureFactory::CreateDeviceInfo());
-
+    //获取视频采集设备信息,并设置视频采集能力
     device_info->GetCapability(_vcm->CurrentDeviceName(), 0, _capability);
     _capability.width = static_cast<int32_t>(width);
     _capability.height = static_cast<int32_t>(height);

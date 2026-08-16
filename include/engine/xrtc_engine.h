@@ -7,8 +7,10 @@
 #include <modules/audio_device/include/audio_device.h>
 #include <modules/video_capture/video_capture.h>
 #include <xrtc/ixrtc_engine.h>
+#include <xrtc/xrtc_log.h>
 
 namespace xrtc {
+
 
 class CallSession;
 
@@ -17,7 +19,9 @@ public:
     XRtcEngine();
     ~XRtcEngine() override;
 
+    ///获取视频设备信息
     std::vector<XRTCDeviceInfo> get_video_device_info() override;
+    ///获取音频设备信息
     std::vector<XRTCDeviceInfo> get_audio_device_info() override;
 
     IXRtcMediaSource* create_video_source(
@@ -30,8 +34,11 @@ public:
     void mute_video(bool mute) override;
 
 private:
+    ///视频设备信息
     std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> video_device;
+    ///音频设备信息
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device;
+    ///通话会话
     std::unique_ptr<CallSession> call_session_;
 };
 

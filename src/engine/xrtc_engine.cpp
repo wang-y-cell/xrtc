@@ -49,11 +49,13 @@ std::vector<XRTCDeviceInfo> XRtcEngine::get_video_device_info() {
     return XRtcGlobal::instance().api_thread()->BlockingCall(
         [this]() -> std::vector<XRTCDeviceInfo> {
             std::vector<XRTCDeviceInfo> device_info;
-            uint32_t total = video_device->NumberOfDevices();
-            if (total <= 0) {
+            uint32_t total = video_device->NumberOfDevices(); //获得视频设备总数
+            if (total <= 0) { //如果设备总数为0，则返回空设备信息
+                log::warn("没有找到摄像头设备");
                 return device_info;
             }
 
+            //遍历所有视频设备，获取设备信息,并将音视频设备存放在device_info中返回
             char id[1024];
             char name[256];
             for (size_t i = 0; i < total; i++) {
@@ -80,14 +82,20 @@ std::vector<XRTCDeviceInfo> XRtcEngine::get_audio_device_info() {
             }
             // 必须先 Init，否则 RecordingDevices() 可能返回垃圾值导致狂打日志
             if (audio_device->Init() != 0) {
+                log::error("音频设备初始化失败");
                 return device_info;
             }
             const int16_t total = audio_device->RecordingDevices();
             if (total <= 0) {
+                log::warn("没有找到音频设备");
                 return device_info;
             }
             // 防御：异常总数直接丢弃
             const int count = (total > 32) ? 0 : static_cast<int>(total);
+            if(!count) {
+                log::error("音频设备总数异常");
+                return device_info;
+            }
             char id[128];
             char name[128];
             for (int i = 0; i < count; ++i) {
@@ -105,7 +113,8 @@ std::vector<XRTCDeviceInfo> XRtcEngine::get_audio_device_info() {
 }
 
 IXRtcMediaSource* XRtcEngine::create_video_source(
-    const ixrtc_video_config& video_config) {
+    const ixrtc_video_config& video_config
+) {
     return XRtcGlobal::instance().api_thread()->BlockingCall(
         [video_config]() -> IXRtcMediaSource* {
             return VcmCapture::create(video_config.width, video_config.height,

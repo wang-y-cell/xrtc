@@ -184,5 +184,12 @@ flowchart LR
 
 ## 7. 预览说明
 
-- **Cursor / VS Code**：打开本文件 → 打开 Markdown 预览（通常 `Ctrl+Shift+V`）
-- **在线导出 PNG/SVG**：[https://mermaid.live](https://mermaid.live) 粘贴 ```mermaid``` 代码块内容即可
+### Mermaid（本文件）
+
+- **Cursor / VS Code**：`Ctrl+Shift+V` 打开预览；若仍显示代码块，需安装 **Markdown Preview Mermaid Support**
+- **在线**：[https://mermaid.live](https://mermaid.live)
+
+### PlantUML（推荐，预览更稳）
+
+- **完整类图（一张）**：[plantuml/05-class-diagram.puml](./plantuml/05-class-diagram.puml)（说明见 [class-diagram.md](./class-diagram.md)）
+- 其它图：[architecture-plantuml.md](./architecture-plantuml.md)、[plantuml/](./plantuml/)（安装 **PlantUML** 扩展后 `Alt+D` 预览）

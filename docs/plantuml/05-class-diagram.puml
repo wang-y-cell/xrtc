@@ -1,0 +1,277 @@
+@startuml xrtc_class_diagram
+title xrtc 完整类图（核心类型与关系）
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontName Microsoft YaHei
+skinparam packageStyle rectangle
+skinparam linetype ortho
+
+left to right direction
+
+' ========== 外部基类（简化） ==========
+package "utils" #F5F0FA {
+  abstract class object {
+  }
+}
+
+package "webrtc (外部)" #EEEEEE {
+  abstract class PeerConnectionObserver
+  abstract class VideoTrackSource
+  interface "VideoSinkInterface<VideoFrame>" as VideoSink
+  class PeerConnectionFactoryInterface
+  class PeerConnectionInterface
+  class AudioDeviceModule
+  class Thread
+}
+
+package "Qt (Demo)" #E8F4FD {
+  class QWidget
+}
+
+' ========== 对外 API ==========
+package "xrtc 对外 API" #FFF4E5 {
+  enum XRtcError {
+    kNOERROR
+    kInvalidParam
+    kSignalingFailed
+    kPeerConnectionFailed
+    kMediaStartFailed
+  }
+
+  interface IXRtcEngine {
+    +get_video_device_info()
+    +get_audio_device_info()
+    +create_video_source(config)
+    +destroy_video_source(src)
+    +join(config)
+    +leave()
+    +mute_audio(mute)
+    +mute_video(mute)
+  }
+
+  abstract class XRtcEngineObserver {
+    +video_source_start_event(...)
+    +video_source_stop_event(...)
+    +on_video_frame(...)
+    +on_join_result(error, msg)
+    +on_leave(error)
+    +on_connection_state(state)
+    +on_remote_user_joined(user)
+    +on_remote_user_left(user)
+    +on_remote_video_frame(feed_id, frame)
+  }
+
+  interface IXRtcMediaSource {
+    +start()
+    +stop()
+  }
+
+  class XRTCJoinConfig <<struct>> {
+    +janus_ws_url
+    +room_id
+    +display_name
+    +video_device_id
+    +ice_servers
+  }
+}
+
+' ========== Demo ==========
+package "demo" #E8F4FD {
+  class Widget {
+    -engine : IXRtcEngine*
+    +join_meeting()
+    +leave_meeting()
+  }
+}
+
+' ========== Engine ==========
+package "engine" #EAF7EA {
+  class XRtcGlobal <<singleton>> {
+    -api_thread_
+    -worker_thread_
+    -network_thread_
+    -observer_
+    -pc_factory_
+    -adm_
+    +instance()
+    +api_thread()
+    +observer()
+    +set_observer(obs)
+    +GetOrCreatePeerConnectionFactory()
+  }
+
+  class XRtcEngine {
+    -video_device
+    -audio_device
+    -call_session_
+    +join(config)
+    +leave()
+    +create_video_source(...)
+  }
+}
+
+' ========== Session ==========
+package "session" #EAF7EA {
+  class CallSession {
+    -config_
+    -active_
+    -janus_
+    -capture_
+    -video_source_
+    -publisher_pc_
+    -subscriber_pcs_
+    -remote_sinks_
+    +Start(config)
+    +Stop()
+    +MuteAudio(mute)
+    +MuteVideo(mute)
+  }
+}
+
+' ========== Janus ==========
+package "janus" #EAF7EA {
+  class JanusClient {
+    +joined_as_publisher : signal
+    +publishers : signal
+    +publisher_left : signal
+    +publisher_answer : signal
+    +subscriber_offer : signal
+    +remote_candidate : signal
+    +error : signal
+    +destroyed : signal
+    -transport_
+    -session_id_
+    -pub_handle_
+    +Connect(config)
+    +Disconnect()
+    +Publish(jsep)
+    +Subscribe(feed_id)
+    +SendTrickle(...)
+  }
+
+  class WebsocketTransport {
+    +message : signal
+    +connected : signal
+    +disconnected : signal
+    +error : signal
+    -impl_
+    +open(url)
+    +send_text(text)
+    +close()
+  }
+
+  class "WebsocketTransport::Impl" as WsImpl <<Pimpl>> {
+    -ioc
+    -ws
+    -thread
+    +service_loop()
+  }
+
+  class JanusJsep <<struct>> {
+    +type
+    +sdp
+  }
+
+  class JanusPublisherInfo <<struct>> {
+    +feed_id
+    +display
+  }
+}
+
+' ========== PC / Media ==========
+package "pc / media" #EAF7EA {
+  class PeerConnectionHandler {
+    -factory_
+    -pc_
+    -callbacks_
+    +Init(ice_servers)
+    +CreateOffer()
+    +CreateAnswer()
+    +SetRemoteDescription(...)
+    +AddIceCandidate(...)
+    +AddTrack(...)
+    +MuteAudio/MuteVideo
+  }
+
+  class VcmCapture {
+    -_vcm
+    -track_source_
+    +create(...)
+    +start()
+    +stop()
+    +OnFrame(frame)
+    +set_track_source(src)
+  }
+
+  class XrtcVideoTrackSource {
+    -broadcaster_
+    +Create()
+    +PushFrame(frame)
+  }
+
+  class RemoteVideoSink {
+    -feed_id_
+    -callback_
+    +OnFrame(frame)
+  }
+}
+
+' ========== 继承 ==========
+IXRtcEngine <|-- XRtcEngine
+XRtcEngineObserver <|-- Widget
+QWidget <|-- Widget
+IXRtcMediaSource <|-- VcmCapture
+object <|-- CallSession
+object <|-- JanusClient
+object <|-- WebsocketTransport
+PeerConnectionObserver <|-- PeerConnectionHandler
+VideoTrackSource <|-- XrtcVideoTrackSource
+VideoSink <|.. VcmCapture
+VideoSink <|.. RemoteVideoSink
+
+' ========== 组合 / 依赖 ==========
+Widget "1" o--> "1" IXRtcEngine : engine
+XRtcEngine "1" *--> "0..1" CallSession : call_session_
+XRtcEngine ..> XRtcGlobal : 使用单例
+XRtcGlobal "1" o--> "0..1" XRtcEngineObserver : observer_
+XRtcGlobal o--> PeerConnectionFactoryInterface : pc_factory_
+XRtcGlobal o--> Thread : api/worker/network
+XRtcGlobal o--> AudioDeviceModule : adm_
+
+CallSession "1" *--> "1" JanusClient : janus_
+CallSession "1" *--> "0..1" PeerConnectionHandler : publisher_pc_
+CallSession "1" *--> "*" PeerConnectionHandler : subscriber_pcs_
+CallSession "1" o--> "0..1" VcmCapture : capture_
+CallSession "1" o--> "0..1" XrtcVideoTrackSource : video_source_
+CallSession "1" *--> "*" RemoteVideoSink : remote_sinks_
+CallSession ..> XRtcGlobal : PostTask / observer
+CallSession ..> XRTCJoinConfig : config_
+CallSession ..> JanusJsep
+CallSession ..> JanusPublisherInfo
+
+JanusClient "1" *--> "1" WebsocketTransport : transport_
+JanusClient ..> utils.signal : emit 事件
+WebsocketTransport "1" *--> "1" WsImpl : impl_
+JanusClient ..> CallSession : utils::connect 槽
+
+PeerConnectionHandler o--> PeerConnectionFactoryInterface : factory_
+PeerConnectionHandler o--> PeerConnectionInterface : pc_
+VcmCapture o--> XrtcVideoTrackSource : track_source_
+XRtcEngine ..> VcmCapture : create_video_source
+XRtcEngine ..> IXRtcMediaSource
+IXRtcEngine ..> XRtcError
+XRtcEngineObserver ..> XRtcError
+
+note right of CallSession
+  编排中心：连接 Janus 信号，
+  PostTask 到 api_thread，
+  再回调 XRtcEngineObserver
+end note
+
+note bottom of WebsocketTransport
+  Pimpl：Beast / Asio
+  细节藏在 Impl
+end note
+
+@enduml

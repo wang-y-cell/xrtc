@@ -7,146 +7,154 @@
 namespace xrtc {
 
 CallSession::CallSession() {
+    // Janus 在 Beast 线程 emit；亲和 loop 置空以 Direct，再 PostTask 到 api_thread
+    move_to_thread(static_cast<utils::event_loop*>(nullptr));
     janus_ = std::make_unique<JanusClient>();
     bindJanusSignals();
 }
 
 CallSession::~CallSession() {
+    invalidate();
     Stop();
 }
 
 void CallSession::bindJanusSignals() {
     janus_conns_.clear();
 
-    janus_conns_.emplace_back(janus_->joined_as_publisher.connect([this]() {
-        XRtcGlobal::instance().api_thread()->PostTask(
-            [this]() { onJoinedAsPublisher(); });
-    }));
-
-    janus_conns_.emplace_back(janus_->publishers.connect(
-        [this](const std::vector<JanusPublisherInfo>& pubs) {
-            XRtcGlobal::instance().api_thread()->PostTask([this, pubs]() {
-                for (const auto& p : pubs) {
-                    subscribeFeed(p);
-                }
-            });
-        }));
-
-    janus_conns_.emplace_back(janus_->publisher_left.connect(
-        [this](uint64_t feed_id, const std::string&) {
-            XRtcGlobal::instance().api_thread()->PostTask([this, feed_id]() {
-                for (auto it = handle_to_feed_.begin();
-                     it != handle_to_feed_.end();) {
-                    if (it->second == feed_id) {
-                        subscriber_pcs_.erase(it->first);
-                        it = handle_to_feed_.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-                remote_sinks_.erase(feed_id);
-                if (auto* obs = XRtcGlobal::instance().observer()) {
-                    XRTCRemoteUser user;
-                    user.feed_id = feed_id;
-                    obs->on_remote_user_left(user);
-                }
-            });
-        }));
-
+    janus_conns_.emplace_back(utils::connect(
+        janus_->joined_as_publisher, this, &CallSession::onJoinedAsPublisher));
     janus_conns_.emplace_back(
-        janus_->publisher_answer.connect([this](const JanusJsep& jsep) {
-            XRtcGlobal::instance().api_thread()->PostTask([this, jsep]() {
+        utils::connect(janus_->publishers, this, &CallSession::onPublishers));
+    janus_conns_.emplace_back(utils::connect(janus_->publisher_left, this,
+                                             &CallSession::onPublisherLeft));
+    janus_conns_.emplace_back(utils::connect(
+        janus_->publisher_answer, this, &CallSession::onPublisherAnswer));
+    janus_conns_.emplace_back(utils::connect(
+        janus_->subscriber_offer, this, &CallSession::onSubscriberOffer));
+    janus_conns_.emplace_back(utils::connect(
+        janus_->remote_candidate, this, &CallSession::onRemoteCandidate));
+    janus_conns_.emplace_back(
+        utils::connect(janus_->error, this, &CallSession::onJanusError));
+    janus_conns_.emplace_back(
+        utils::connect(janus_->destroyed, this, &CallSession::onJanusDestroyed));
+}
+
+void CallSession::onPublishers(const std::vector<JanusPublisherInfo>& pubs) {
+    XRtcGlobal::instance().api_thread()->PostTask([this, pubs]() {
+        for (const auto& p : pubs) {
+            subscribeFeed(p);
+        }
+    });
+}
+
+void CallSession::onPublisherLeft(uint64_t feed_id, const std::string&) {
+    XRtcGlobal::instance().api_thread()->PostTask([this, feed_id]() {
+        for (auto it = handle_to_feed_.begin(); it != handle_to_feed_.end();) {
+            if (it->second == feed_id) {
+                subscriber_pcs_.erase(it->first);
+                it = handle_to_feed_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        remote_sinks_.erase(feed_id);
+        if (auto* obs = XRtcGlobal::instance().observer()) {
+            XRTCRemoteUser user;
+            user.feed_id = feed_id;
+            obs->on_remote_user_left(user);
+        }
+    });
+}
+
+void CallSession::onPublisherAnswer(const JanusJsep& jsep) {
+    XRtcGlobal::instance().api_thread()->PostTask([this, jsep]() {
+        if (publisher_pc_) {
+            publisher_pc_->SetRemoteDescription(jsep.type, jsep.sdp);
+        }
+    });
+}
+
+void CallSession::onSubscriberOffer(uint64_t feed_id, uint64_t handle_id,
+                                    const JanusJsep& offer) {
+    XRtcGlobal::instance().api_thread()->PostTask(
+        [this, feed_id, handle_id, offer]() {
+            handle_to_feed_[handle_id] = feed_id;
+
+            PeerConnectionHandler::Callbacks pcb;
+            pcb.on_local_description =
+                [this, handle_id](const std::string& type,
+                                  const std::string& sdp) {
+                    onSubscriberLocalSdp(handle_id, type, sdp);
+                };
+            pcb.on_ice_candidate = [this, handle_id](const std::string& mid,
+                                                     int idx,
+                                                     const std::string& cand) {
+                janus_->SendTrickle(handle_id, mid, idx, cand);
+            };
+            pcb.on_ice_gathering_complete = [this, handle_id]() {
+                janus_->SendTrickleComplete(handle_id);
+            };
+            pcb.on_track =
+                [this, feed_id](
+                    webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>
+                        track) { attachRemoteTrack(feed_id, track); };
+            pcb.on_error = [](const std::string& err) {
+                utils::log::error("Subscriber PC error: {}", err);
+            };
+
+            auto factory =
+                XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
+            auto pc =
+                std::make_unique<PeerConnectionHandler>(factory, std::move(pcb));
+            if (!pc->Init(config_.ice_servers)) {
+                notifyJoinResult(XRtcError::kPeerConnectionFailed,
+                                 "subscriber pc init failed");
+                return;
+            }
+            pc->SetRemoteDescription(offer.type, offer.sdp);
+            pc->CreateAnswer();
+            subscriber_pcs_[handle_id] = std::move(pc);
+
+            if (auto* obs = XRtcGlobal::instance().observer()) {
+                XRTCRemoteUser user;
+                user.feed_id = feed_id;
+                obs->on_remote_user_joined(user);
+            }
+        });
+}
+
+void CallSession::onRemoteCandidate(uint64_t handle_id, const std::string& mid,
+                                    int idx, const std::string& cand) {
+    XRtcGlobal::instance().api_thread()->PostTask(
+        [this, handle_id, mid, idx, cand]() {
+            if (handle_id == janus_->publisher_handle()) {
                 if (publisher_pc_) {
-                    publisher_pc_->SetRemoteDescription(jsep.type, jsep.sdp);
+                    publisher_pc_->AddIceCandidate(mid, idx, cand);
                 }
-            });
-        }));
+                return;
+            }
+            auto it = subscriber_pcs_.find(handle_id);
+            if (it != subscriber_pcs_.end()) {
+                it->second->AddIceCandidate(mid, idx, cand);
+            }
+        });
+}
 
-    janus_conns_.emplace_back(janus_->subscriber_offer.connect(
-        [this](uint64_t feed_id, uint64_t handle_id, const JanusJsep& offer) {
-            XRtcGlobal::instance().api_thread()->PostTask(
-                [this, feed_id, handle_id, offer]() {
-                    handle_to_feed_[handle_id] = feed_id;
+void CallSession::onJanusError(const std::string& err) {
+    XRtcGlobal::instance().api_thread()->PostTask([this, err]() {
+        utils::log::error("[session] signaling error: {}", err);
+        active_ = false;
+        if (janus_) {
+            janus_->Disconnect();
+        }
+        const std::string msg =
+            err.empty() ? "signaling failed (empty detail)" : err;
+        notifyJoinResult(XRtcError::kSignalingFailed, msg);
+    });
+}
 
-                    PeerConnectionHandler::Callbacks pcb;
-                    pcb.on_local_description =
-                        [this, handle_id](const std::string& type,
-                                          const std::string& sdp) {
-                            onSubscriberLocalSdp(handle_id, type, sdp);
-                        };
-                    pcb.on_ice_candidate =
-                        [this, handle_id](const std::string& mid, int idx,
-                                          const std::string& cand) {
-                            janus_->SendTrickle(handle_id, mid, idx, cand);
-                        };
-                    pcb.on_ice_gathering_complete = [this, handle_id]() {
-                        janus_->SendTrickleComplete(handle_id);
-                    };
-                    pcb.on_track =
-                        [this, feed_id](
-                            webrtc::scoped_refptr<
-                                webrtc::MediaStreamTrackInterface> track) {
-                            attachRemoteTrack(feed_id, track);
-                        };
-                    pcb.on_error = [](const std::string& err) {
-                        utils::log::error("Subscriber PC error: {}", err);
-                    };
-
-                    auto factory = XRtcGlobal::instance()
-                                       .GetOrCreatePeerConnectionFactory();
-                    auto pc = std::make_unique<PeerConnectionHandler>(
-                        factory, std::move(pcb));
-                    if (!pc->Init(config_.ice_servers)) {
-                        notifyJoinResult(XRtcError::kPeerConnectionFailed,
-                                         "subscriber pc init failed");
-                        return;
-                    }
-                    pc->SetRemoteDescription(offer.type, offer.sdp);
-                    pc->CreateAnswer();
-                    subscriber_pcs_[handle_id] = std::move(pc);
-
-                    if (auto* obs = XRtcGlobal::instance().observer()) {
-                        XRTCRemoteUser user;
-                        user.feed_id = feed_id;
-                        obs->on_remote_user_joined(user);
-                    }
-                });
-        }));
-
-    janus_conns_.emplace_back(janus_->remote_candidate.connect(
-        [this](uint64_t handle_id, const std::string& mid, int idx,
-               const std::string& cand) {
-            XRtcGlobal::instance().api_thread()->PostTask(
-                [this, handle_id, mid, idx, cand]() {
-                    if (handle_id == janus_->publisher_handle()) {
-                        if (publisher_pc_) {
-                            publisher_pc_->AddIceCandidate(mid, idx, cand);
-                        }
-                        return;
-                    }
-                    auto it = subscriber_pcs_.find(handle_id);
-                    if (it != subscriber_pcs_.end()) {
-                        it->second->AddIceCandidate(mid, idx, cand);
-                    }
-                });
-        }));
-
-    janus_conns_.emplace_back(
-        janus_->error.connect([this](const std::string& err) {
-            XRtcGlobal::instance().api_thread()->PostTask([this, err]() {
-                utils::log::error("[session] signaling error: {}", err);
-                active_ = false;
-                if (janus_) {
-                    janus_->Disconnect();
-                }
-                const std::string msg =
-                    err.empty() ? "signaling failed (empty detail)" : err;
-                notifyJoinResult(XRtcError::kSignalingFailed, msg);
-            });
-        }));
-
-    janus_conns_.emplace_back(janus_->destroyed.connect(
-        []() { utils::log::info("Janus connection destroyed"); }));
+void CallSession::onJanusDestroyed() {
+    utils::log::info("Janus connection destroyed");
 }
 
 void CallSession::Start(const XRTCJoinConfig& config) {
@@ -305,17 +313,20 @@ void CallSession::createPublisherPc() {
 }
 
 void CallSession::onJoinedAsPublisher() {
-    utils::log::info("[session] onJoinedAsPublisher: starting local media + PC");
-    auto st = ensureLocalMedia();
-    if (!st) {
-        utils::log::error("[session] ensureLocalMedia failed: {}",
-                          XRtcErrorToString(st.error()));
-        notifyJoinResult(st.error(), "failed to start local media");
-        return;
-    }
-    createPublisherPc();
-    utils::log::info("[session] notify join success");
-    notifyJoinResult(XRtcError::kNOERROR, "joined");
+    XRtcGlobal::instance().api_thread()->PostTask([this]() {
+        utils::log::info(
+            "[session] onJoinedAsPublisher: starting local media + PC");
+        auto st = ensureLocalMedia();
+        if (!st) {
+            utils::log::error("[session] ensureLocalMedia failed: {}",
+                              XRtcErrorToString(st.error()));
+            notifyJoinResult(st.error(), "failed to start local media");
+            return;
+        }
+        createPublisherPc();
+        utils::log::info("[session] notify join success");
+        notifyJoinResult(XRtcError::kNOERROR, "joined");
+    });
 }
 
 void CallSession::onPublisherLocalSdp(const std::string& type,

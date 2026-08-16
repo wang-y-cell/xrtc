@@ -7,24 +7,27 @@
 namespace xrtc {
 
 JanusClient::JanusClient() {
+    // Beast io 线程 emit；亲和 loop 置空才能跨线程 Direct（切线程由上层 PostTask）
+    move_to_thread(static_cast<utils::event_loop*>(nullptr));
     transport_ = std::make_unique<WebsocketTransport>();
     bind_transport_signals();
 }
 
 JanusClient::~JanusClient() {
+    invalidate();
     Disconnect();
 }
 
 void JanusClient::bind_transport_signals() {
     transport_conns_.clear();
-    transport_conns_.emplace_back(transport_->message.connect(
-        [this](const std::string& text) { on_ws_message(text); }));
     transport_conns_.emplace_back(
-        transport_->connected.connect([this]() { on_ws_connected(); }));
+        utils::connect(transport_->message, this, &JanusClient::on_ws_message));
+    transport_conns_.emplace_back(utils::connect(
+        transport_->connected, this, &JanusClient::on_ws_connected));
+    transport_conns_.emplace_back(utils::connect(
+        transport_->disconnected, this, &JanusClient::on_ws_disconnected));
     transport_conns_.emplace_back(
-        transport_->disconnected.connect([this]() { on_ws_disconnected(); }));
-    transport_conns_.emplace_back(transport_->error.connect(
-        [this](const std::string& err) { error.emit(err); }));
+        utils::connect(transport_->error, this, &JanusClient::on_ws_error));
 }
 
 XRtcStatus JanusClient::Connect(const XRTCJoinConfig& config) {
@@ -113,6 +116,10 @@ void JanusClient::on_ws_connected() {
 void JanusClient::on_ws_disconnected() {
     stop_keepalive();
     destroyed.emit();
+}
+
+void JanusClient::on_ws_error(const std::string& err) {
+    error.emit(err);
 }
 
 void JanusClient::create_session() {

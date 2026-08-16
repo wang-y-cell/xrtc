@@ -9,10 +9,10 @@
 namespace xrtc {
 
 /// Boost.Beast WebSocket 客户端（无 Qt）；事件用 utils::signal
-class WebsocketTransport {
+class WebsocketTransport : public utils::object {
 public:
     WebsocketTransport();
-    ~WebsocketTransport();
+    ~WebsocketTransport() override;
 
     WebsocketTransport(const WebsocketTransport&) = delete;
     WebsocketTransport& operator=(const WebsocketTransport&) = delete;

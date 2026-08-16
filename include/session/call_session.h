@@ -17,10 +17,10 @@
 namespace xrtc {
 
 /// 串联 Janus 信令与 Publisher/Subscriber PeerConnection（无 Qt）
-class CallSession {
+class CallSession : public utils::object {
 public:
     CallSession();
-    ~CallSession();
+    ~CallSession() override;
 
     CallSession(const CallSession&) = delete;
     CallSession& operator=(const CallSession&) = delete;
@@ -37,6 +37,15 @@ private:
     void notifyJoinResult(XRtcError error, const std::string& message);
     void bindJanusSignals();
     void onJoinedAsPublisher();
+    void onPublishers(const std::vector<JanusPublisherInfo>& pubs);
+    void onPublisherLeft(uint64_t feed_id, const std::string& display);
+    void onPublisherAnswer(const JanusJsep& jsep);
+    void onSubscriberOffer(uint64_t feed_id, uint64_t handle_id,
+                           const JanusJsep& offer);
+    void onRemoteCandidate(uint64_t handle_id, const std::string& mid, int idx,
+                           const std::string& cand);
+    void onJanusError(const std::string& err);
+    void onJanusDestroyed();
     XRtcStatus ensureLocalMedia();
     void createPublisherPc();
     void subscribeFeed(const JanusPublisherInfo& info);

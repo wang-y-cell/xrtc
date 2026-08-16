@@ -28,10 +28,10 @@ struct JanusPublisherInfo {
     std::string display;
 };
 
-class JanusClient {
+class JanusClient : public utils::object {
 public:
     JanusClient();
-    ~JanusClient();
+    ~JanusClient() override;
 
     JanusClient(const JanusClient&) = delete;
     JanusClient& operator=(const JanusClient&) = delete;
@@ -75,6 +75,7 @@ private:
     void on_ws_connected();
     void on_ws_message(const std::string& text);
     void on_ws_disconnected();
+    void on_ws_error(const std::string& err);
     void handle_success(const json& msg);
     void handle_event(const json& msg);
     void handle_trickle(const json& msg);

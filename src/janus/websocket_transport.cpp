@@ -292,6 +292,7 @@ WebsocketTransport::WebsocketTransport()
 }
 
 WebsocketTransport::~WebsocketTransport() {
+    invalidate();
     close();
 }
 

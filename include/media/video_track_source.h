@@ -23,6 +23,10 @@ protected:
     webrtc::VideoSourceInterface<webrtc::VideoFrame>* source() override;
 
 private:
+    /** 
+    * @brief 视频广播器,用于将视频帧推入PeerConnection的本地视频源
+    * 直接初始化
+     */
     webrtc::VideoBroadcaster broadcaster_;
 };
 

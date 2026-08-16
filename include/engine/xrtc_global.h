@@ -88,8 +88,8 @@ private:
     */
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm_;
     /**
-     *@brief PeerConnectionFactory
-     * 在GetOrCreatePeerConnectionFactory函数中创建
+     *@brief 媒体处理工厂
+     * 在GetOrCreatePeerConnectionFactory函数中创建,用于创建媒体处理对象
     */
     webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> pc_factory_;
 };

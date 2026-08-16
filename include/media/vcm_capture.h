@@ -67,11 +67,17 @@ private:
     std::string _device_id;
     //当前线程,构造函数初始化 
     webrtc::Thread* _current_thread;
-    //在init函数中创建,根据设备id创建视频采集模块,画面返回在OnFrame方法中
+    /**
+     * @brief 在init函数中创建,根据设备id创建视频采集模块,画面返回在OnFrame方法中,
+     * 当调用start函数时,会开始采集视频,并回调OnFrame方法
+    */
     webrtc::scoped_refptr<webrtc::VideoCaptureModule> _vcm;
     //视频采集能力,构造函数初始化, 在init函数中获取视频采集设备信息,并设置视频采集能力
     webrtc::VideoCaptureCapability _capability;
-    //视频源,构造函数初始化, 在set_track_source函数中创建,将视频采集模块的画面推入视频源
+    /**
+     * @brief 视频源,在set_track_source函数中创建
+     * 负责处理OnFrame中的视频帧,并推入PeerConnection的本地视频源
+    */
     webrtc::scoped_refptr<XrtcVideoTrackSource> track_source_;
 };
 

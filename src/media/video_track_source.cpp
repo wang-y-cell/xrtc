@@ -12,6 +12,7 @@ XrtcVideoTrackSource::XrtcVideoTrackSource()
     : webrtc::VideoTrackSource(/*remote=*/false) {}
 
 void XrtcVideoTrackSource::PushFrame(const webrtc::VideoFrame& frame) {
+    //把这一帧视频交给 VideoBroadcaster，由它分发给所有订阅者
     broadcaster_.OnFrame(frame);
 }
 

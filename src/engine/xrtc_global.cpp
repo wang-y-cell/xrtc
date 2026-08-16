@@ -1,5 +1,5 @@
 #include <engine/xrtc_global.h>
-
+#include <xrtc/xrtc_log.h>
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
 #include "api/create_peerconnection_factory.h"
@@ -87,7 +87,7 @@ XRtcGlobal::GetOrCreatePeerConnectionFactory() {
         /*audio_processing=*/nullptr);
 
     if (!pc_factory_) {
-        RTC_LOG(LS_ERROR) << "CreatePeerConnectionFactory failed";
+        log::error("创建PeerConnectionFactory失败");
     }
     return pc_factory_;
 }

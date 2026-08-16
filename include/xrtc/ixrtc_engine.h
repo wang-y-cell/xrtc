@@ -24,9 +24,11 @@ class XRtcEngineObserver {
 public:
     virtual ~XRtcEngineObserver() = default;
 
+    ///开启视频资源之后，界面需要展示的逻辑
     virtual void video_source_start_event(IXRtcMediaSource* video_source,
                                           XRtcError error) {} //开启视频资源之后界面的动作,
 
+    ///关闭视频资源之后，界面需要展示的逻辑
     virtual void video_source_stop_event(IXRtcMediaSource* video_source,
                                          XRtcError error) {}
 

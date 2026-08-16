@@ -20,8 +20,19 @@ add_library(spdlog_header INTERFACE)
 target_include_directories(spdlog_header INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog/include)
 
+# ---------- Boost (Beast/Asio header-only WebSocket) ----------
+# 本机安装：F:/wy/boost_install（MinGW 编译的 .dll 仅 header-only 组件可与 MSVC 共用）
+if(POLICY CMP0144)
+    cmake_policy(SET CMP0144 NEW)
+endif()
+set(Boost_ROOT "F:/wy/boost_install" CACHE PATH "Boost install prefix")
+set(Boost_NO_SYSTEM_PATHS ON)
+list(APPEND CMAKE_PREFIX_PATH "${Boost_ROOT}")
+find_package(Boost 1.82 REQUIRED CONFIG)
+message(STATUS "Boost ${Boost_VERSION} found: ${Boost_DIR}")
+
 # ---------- xrtc SDK (no Qt) ----------
-# 信令 WebSocket 使用 Winsock 实现，不再依赖 libwebsockets
+# 信令 WebSocket 使用 Boost.Beast，不再依赖手写 Winsock / libwebsockets
 # include/<module>/*.h 与 src/<module>/*.cpp 一一对应
 add_library(xrtc STATIC
     src/engine/xrtc_global.cpp
@@ -52,6 +63,7 @@ target_link_libraries(xrtc
     PRIVATE
         nlohmann_json
         spdlog_header
+        Boost::headers
         ws2_32
         winmm
         strmiids
@@ -70,10 +82,15 @@ target_compile_definitions(xrtc
         WIN32_LEAN_AND_MEAN
         $<$<CONFIG:Debug>:_ITERATOR_DEBUG_LEVEL=0>
         $<$<CONFIG:Debug>:_HAS_ITERATOR_DEBUGGING=0>
+    PRIVATE
+        # Beast/Asio 为 header-only，禁止 MSVC 自动链接 MinGW 版 Boost 二进制
+        BOOST_ALL_NO_LIB
 )
 
 if(MSVC)
-    target_compile_options(xrtc PRIVATE /utf-8)
+    target_compile_options(xrtc PRIVATE /utf-8 /bigobj)
+    # Boost.Asio 需要明确的 Windows 目标版本
+    target_compile_definitions(xrtc PRIVATE _WIN32_WINNT=0x0A00)
 endif()
 
 # ---------- Qt Demo ----------

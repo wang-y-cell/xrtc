@@ -36,14 +36,14 @@ public:
     JanusClient(const JanusClient&) = delete;
     JanusClient& operator=(const JanusClient&) = delete;
 
-    utils::signal<> joined_as_publisher;
-    utils::signal<std::vector<JanusPublisherInfo>> publishers;
-    utils::signal<uint64_t, std::string> publisher_left;
-    utils::signal<JanusJsep> publisher_answer;
-    utils::signal<uint64_t, uint64_t, JanusJsep> subscriber_offer;
-    utils::signal<uint64_t, std::string, int, std::string> remote_candidate;
-    utils::signal<std::string> error;
-    utils::signal<> destroyed;
+    utils::signal<> joined_as_publisher{this};
+    utils::signal<std::vector<JanusPublisherInfo>> publishers{this};
+    utils::signal<uint64_t, std::string> publisher_left{this};
+    utils::signal<JanusJsep> publisher_answer{this};
+    utils::signal<uint64_t, uint64_t, JanusJsep> subscriber_offer{this};
+    utils::signal<uint64_t, std::string, int, std::string> remote_candidate{this};
+    utils::signal<std::string> error{this};
+    utils::signal<> destroyed{this};
 
     XRtcStatus Connect(const XRTCJoinConfig& config);
     void Disconnect();
@@ -72,10 +72,10 @@ private:
     void bind_transport_signals();
     void send_json(const json& obj);
     std::string new_transaction();
-    void on_ws_connected();
-    void on_ws_message(const std::string& text);
-    void on_ws_disconnected();
-    void on_ws_error(const std::string& err);
+    utils::slots_t<> on_ws_connected();
+    utils::slots_t<> on_ws_message(const std::string& text);
+    utils::slots_t<> on_ws_disconnected();
+    utils::slots_t<> on_ws_error(const std::string& err);
     void handle_success(const json& msg);
     void handle_event(const json& msg);
     void handle_trickle(const json& msg);

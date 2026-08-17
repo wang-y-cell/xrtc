@@ -28,8 +28,10 @@ using tcp = net::ip::tcp;
 }  // namespace
 
 struct WebsocketTransport::Impl {
+    //指回外面的 WebsocketTransport，用来 emit 信号
     WebsocketTransport* owner = nullptr;
 
+    //解析后的 ws://host:port/path，以及 janus-protocol
     std::string address;
     std::string path = "/";
     std::string host_header;
@@ -37,18 +39,28 @@ struct WebsocketTransport::Impl {
     bool use_ssl = false;
     std::string protocol = "janus-protocol";
 
+    //boost::asio::io_context，用来管理网络事件
     std::unique_ptr<net::io_context> ioc;
+    //boost::beast::websocket::stream，用来管理 WebSocket 连接
     std::unique_ptr<websocket::stream<beast::tcp_stream>> ws;
+    //boost::beast::flat_buffer，用来缓存接收到的数据
     beast::flat_buffer read_buf;
+    //std::deque<std::string>，用来缓存发送的数据
     std::deque<std::string> write_queue;
+    //bool，用来标记是否正在写数据
     bool writing = false;
 
+    //std::thread，用来运行网络事件循环
     std::thread thread;
+    //std::atomic<bool>，用来标记是否已连接
     std::atomic<bool> connected{false};
+    //std::atomic<bool>，用来标记是否正在关闭
     std::atomic<bool> closing{false};
+    //std::atomic<bool>，用来标记是否已通知错误
     std::atomic<bool> error_notified{false};
 
     void notify_error(const std::string& err) {
+        //下面这段的意思是错误只通知一次
         bool expected = false;
         if (!error_notified.compare_exchange_strong(expected, true)) {
             return;
@@ -59,6 +71,11 @@ struct WebsocketTransport::Impl {
         }
     }
 
+    /**
+      @brief 解析 URL，提取 host、port、path 等信息
+      @param url 要解析的 URL 字符串
+      @return 如果解析成功，返回 true；否则返回 false
+    */
     bool parse_url(const std::string& url) {
         use_ssl = false;
         port = 80;
@@ -67,40 +84,47 @@ struct WebsocketTransport::Impl {
         host_header.clear();
 
         std::string rest = url;
-        if (rest.rfind("wss://", 0) == 0) {
-            use_ssl = true;
-            port = 443;
-            rest = rest.substr(6);
-        } else if (rest.rfind("ws://", 0) == 0) {
-            rest = rest.substr(5);
+        if (rest.rfind("wss://", 0) == 0) { //如果url以wss://开头
+            use_ssl = true; //使用ssl
+            port = 443; //端口443
+            rest = rest.substr(6); //去掉wss://
+        } else if (rest.rfind("ws://", 0) == 0) { //如果url以ws://开头
+            rest = rest.substr(5); //去掉ws://
         } else {
-            return false;
+            return false; //如果url不是wss://或ws://开头，返回false
         }
 
-        const auto slash = rest.find('/');
+        //hostport是第一个/之前的字符串,path是/之后的所有字符串
+        const auto slash = rest.find('/'); //找到/的位置
         std::string hostport =
             slash == std::string::npos ? rest : rest.substr(0, slash);
         path = slash == std::string::npos ? "/" : rest.substr(slash);
 
-        const auto colon = hostport.rfind(':');
-        if (colon != std::string::npos) {
-            address = hostport.substr(0, colon);
-            port = std::stoi(hostport.substr(colon + 1));
+        const auto colon = hostport.rfind(':'); //找到:的位置
+        if (colon != std::string::npos) { //如果找到:
+            address = hostport.substr(0, colon); //hostport的前一部分是地址
+            port = std::stoi(hostport.substr(colon + 1)); //hostport的后一部分是端口
         } else {
-            address = hostport;
+            address = hostport; //如果没找到:，则地址就是hostport
         }
-        if (address.empty()) {
+        if (address.empty()) { //如果地址为空，返回false
             return false;
         }
 
+        //如果端口是80且没有使用ssl，或者端口是443且使用ssl，则host_header就是地址
         if ((port == 80 && !use_ssl) || (port == 443 && use_ssl)) {
             host_header = address;
-        } else {
+        } else { //如果端口不是80且没有使用ssl，或者端口不是443且使用ssl，则host_header就是地址:端口
             host_header = address + ":" + std::to_string(port);
         }
         return true;
     }
 
+    /**
+      @brief 处理连接失败
+      @param ec 错误码
+      @param what 错误信息
+    */
     void fail(beast::error_code ec, const char* what) {
         if (closing.load()) {
             return;
@@ -112,20 +136,27 @@ struct WebsocketTransport::Impl {
         stop_ioc();
     }
 
+    /** @brief 停止io_context */
     void stop_ioc() {
         if (ioc) {
             ioc->stop();
         }
     }
 
+    /** @brief 通知断开连接 */
     void notify_disconnected_if_needed() {
-        const bool was_connected = connected.exchange(false);
-        if (!was_connected || !owner) {
+        const bool was_connected = connected.exchange(false); //如果连接状态为true，则设置为false
+        if (!was_connected || !owner) { //如果连接状态为false，或者owner为空，则返回
             return;
         }
-        owner->disconnected.emit();
+        owner->disconnected.emit(); //通知断开连接
     }
 
+    /**
+      @brief 处理解析失败
+      @param ec 错误码
+      @param results 解析结果
+    */
     void on_resolve(beast::error_code ec, tcp::resolver::results_type results) {
         if (closing.load()) {
             return;
@@ -142,6 +173,10 @@ struct WebsocketTransport::Impl {
             });
     }
 
+    /**
+      @brief 处理连接成功
+      @param ec 错误码
+    */
     void on_connect(beast::error_code ec) {
         if (closing.load()) {
             return;

@@ -108,18 +108,21 @@ void JanusClient::stop_keepalive() {
     }
 }
 
-void JanusClient::on_ws_connected() {
+utils::slots_t<> JanusClient::on_ws_connected() {
     utils::log::info("Janus websocket connected");
     create_session();
+    return {};
 }
 
-void JanusClient::on_ws_disconnected() {
+utils::slots_t<> JanusClient::on_ws_disconnected() {
     stop_keepalive();
     destroyed.emit();
+    return {};
 }
 
-void JanusClient::on_ws_error(const std::string& err) {
+utils::slots_t<> JanusClient::on_ws_error(const std::string& err) {
     error.emit(err);
+    return {};
 }
 
 void JanusClient::create_session() {
@@ -237,14 +240,14 @@ void JanusClient::parse_jsep(const json& msg, JanusJsep* out) {
     out->sdp = jsep.value("sdp", "");
 }
 
-void JanusClient::on_ws_message(const std::string& text) {
+utils::slots_t<> JanusClient::on_ws_message(const std::string& text) {
     utils::log::info("[janus] RX {}", text.substr(0, 500));
     json msg;
     try {
         msg = json::parse(text);
     } catch (const std::exception& e) {
         utils::log::warn("invalid Janus JSON: {}", e.what());
-        return;
+        return {};
     }
 
     const std::string janus = msg.value("janus", "");
@@ -267,6 +270,7 @@ void JanusClient::on_ws_message(const std::string& text) {
         utils::log::error("[janus] gateway {}: {}", janus, reason);
         error.emit(reason);
     }
+    return {};
 }
 
 void JanusClient::handle_success(const json& msg) {

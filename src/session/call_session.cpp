@@ -39,15 +39,18 @@ void CallSession::bindJanusSignals() {
         utils::connect(janus_->destroyed, this, &CallSession::onJanusDestroyed));
 }
 
-void CallSession::onPublishers(const std::vector<JanusPublisherInfo>& pubs) {
+slots_t<void> CallSession::onPublishers(
+    const std::vector<JanusPublisherInfo>& pubs) {
     XRtcGlobal::instance().api_thread()->PostTask([this, pubs]() {
         for (const auto& p : pubs) {
             subscribeFeed(p);
         }
     });
+    return {};
 }
 
-void CallSession::onPublisherLeft(uint64_t feed_id, const std::string&) {
+slots_t<void> CallSession::onPublisherLeft(uint64_t feed_id,
+                                              const std::string&) {
     XRtcGlobal::instance().api_thread()->PostTask([this, feed_id]() {
         for (auto it = handle_to_feed_.begin(); it != handle_to_feed_.end();) {
             if (it->second == feed_id) {
@@ -64,18 +67,21 @@ void CallSession::onPublisherLeft(uint64_t feed_id, const std::string&) {
             obs->on_remote_user_left(user);
         }
     });
+    return {};
 }
 
-void CallSession::onPublisherAnswer(const JanusJsep& jsep) {
+slots_t<void> CallSession::onPublisherAnswer(const JanusJsep& jsep) {
     XRtcGlobal::instance().api_thread()->PostTask([this, jsep]() {
         if (publisher_pc_) {
             publisher_pc_->SetRemoteDescription(jsep.type, jsep.sdp);
         }
     });
+    return {};
 }
 
-void CallSession::onSubscriberOffer(uint64_t feed_id, uint64_t handle_id,
-                                    const JanusJsep& offer) {
+slots_t<void> CallSession::onSubscriberOffer(uint64_t feed_id,
+                                                uint64_t handle_id,
+                                                const JanusJsep& offer) {
     XRtcGlobal::instance().api_thread()->PostTask(
         [this, feed_id, handle_id, offer]() {
             handle_to_feed_[handle_id] = feed_id;
@@ -121,10 +127,12 @@ void CallSession::onSubscriberOffer(uint64_t feed_id, uint64_t handle_id,
                 obs->on_remote_user_joined(user);
             }
         });
+    return {};
 }
 
-void CallSession::onRemoteCandidate(uint64_t handle_id, const std::string& mid,
-                                    int idx, const std::string& cand) {
+slots_t<void> CallSession::onRemoteCandidate(uint64_t handle_id,
+                                                const std::string& mid, int idx,
+                                                const std::string& cand) {
     XRtcGlobal::instance().api_thread()->PostTask(
         [this, handle_id, mid, idx, cand]() {
             if (handle_id == janus_->publisher_handle()) {
@@ -138,9 +146,10 @@ void CallSession::onRemoteCandidate(uint64_t handle_id, const std::string& mid,
                 it->second->AddIceCandidate(mid, idx, cand);
             }
         });
+    return {};
 }
 
-void CallSession::onJanusError(const std::string& err) {
+slots_t<void> CallSession::onJanusError(const std::string& err) {
     XRtcGlobal::instance().api_thread()->PostTask([this, err]() {
         utils::log::error("[session] signaling error: {}", err);
         active_ = false;
@@ -151,10 +160,12 @@ void CallSession::onJanusError(const std::string& err) {
             err.empty() ? "signaling failed (empty detail)" : err;
         notifyJoinResult(XRtcError::kSignalingFailed, msg);
     });
+    return {};
 }
 
-void CallSession::onJanusDestroyed() {
+slots_t<void> CallSession::onJanusDestroyed() {
     utils::log::info("Janus connection destroyed");
+    return {};
 }
 
 void CallSession::Start(const XRTCJoinConfig& config) {
@@ -312,7 +323,7 @@ void CallSession::createPublisherPc() {
     publisher_pc_->CreateOffer();
 }
 
-void CallSession::onJoinedAsPublisher() {
+slots_t<void> CallSession::onJoinedAsPublisher() {
     XRtcGlobal::instance().api_thread()->PostTask([this]() {
         utils::log::info(
             "[session] onJoinedAsPublisher: starting local media + PC");
@@ -327,6 +338,7 @@ void CallSession::onJoinedAsPublisher() {
         utils::log::info("[session] notify join success");
         notifyJoinResult(XRtcError::kNOERROR, "joined");
     });
+    return {};
 }
 
 void CallSession::onPublisherLocalSdp(const std::string& type,

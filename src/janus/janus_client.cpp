@@ -7,8 +7,6 @@
 namespace xrtc {
 
 JanusClient::JanusClient() {
-    // Beast io 线程 emit；亲和 loop 置空才能跨线程 Direct（切线程由上层 PostTask）
-    move_to_thread(static_cast<utils::event_loop*>(nullptr));
     transport_ = std::make_unique<WebsocketTransport>();
     bind_transport_signals();
 }
@@ -31,7 +29,7 @@ void JanusClient::bind_transport_signals() {
 }
 
 XRtcStatus JanusClient::Connect(const XRTCJoinConfig& config) {
-    utils::log::info("[janus] Connect url={} room={} display={}",
+    spdlog::info("[janus] Connect url={} room={} display={}",
                      config.janus_ws_url, config.room_id, config.display_name);
     config_ = config;
     session_id_ = 0;
@@ -44,7 +42,7 @@ XRtcStatus JanusClient::Connect(const XRTCJoinConfig& config) {
     }
     auto st = transport_->open(config.janus_ws_url);
     if (!st) {
-        utils::log::error("[janus] transport open failed: {}",
+        spdlog::error("[janus] transport open failed: {}",
                           XRtcErrorToString(st.error()));
         error.emit("failed to open websocket");
         return st;
@@ -74,7 +72,7 @@ void JanusClient::Disconnect() {
 
 void JanusClient::send_json(const json& obj) {
     const std::string text = obj.dump();
-    utils::log::info("[janus] TX {}", text.substr(0, 400));
+    spdlog::info("[janus] TX {}", text.substr(0, 400));
     transport_->send_text(text);
 }
 
@@ -109,7 +107,7 @@ void JanusClient::stop_keepalive() {
 }
 
 utils::slots_t<> JanusClient::on_ws_connected() {
-    utils::log::info("Janus websocket connected");
+    spdlog::info("Janus websocket connected");
     create_session();
     return {};
 }
@@ -241,17 +239,17 @@ void JanusClient::parse_jsep(const json& msg, JanusJsep* out) {
 }
 
 utils::slots_t<> JanusClient::on_ws_message(const std::string& text) {
-    utils::log::info("[janus] RX {}", text.substr(0, 500));
+    spdlog::info("[janus] RX {}", text.substr(0, 500));
     json msg;
     try {
         msg = json::parse(text);
     } catch (const std::exception& e) {
-        utils::log::warn("invalid Janus JSON: {}", e.what());
+        spdlog::warn("invalid Janus JSON: {}", e.what());
         return {};
     }
 
     const std::string janus = msg.value("janus", "");
-    utils::log::info("[janus] message type={}", janus);
+    spdlog::info("[janus] message type={}", janus);
     if (janus == "success") {
         handle_success(msg);
     } else if (janus == "event") {
@@ -260,14 +258,14 @@ utils::slots_t<> JanusClient::on_ws_message(const std::string& text) {
         handle_trickle(msg);
     } else if (janus == "hangup") {
         const std::string reason = msg.value("reason", "hangup");
-        utils::log::warn("[janus] hangup: {}", reason);
+        spdlog::warn("[janus] hangup: {}", reason);
         error.emit(std::string("hangup: ") + reason);
     } else if (janus == "error" || janus == "timeout") {
         std::string reason = janus;
         if (msg.contains("error") && msg["error"].is_object()) {
             reason = msg["error"].value("reason", janus);
         }
-        utils::log::error("[janus] gateway {}: {}", janus, reason);
+        spdlog::error("[janus] gateway {}: {}", janus, reason);
         error.emit(reason);
     }
     return {};
@@ -289,7 +287,7 @@ void JanusClient::handle_success(const json& msg) {
 
     if (op == PendingOp::kCreate) {
         session_id_ = data.value("id", static_cast<uint64_t>(0));
-        utils::log::info("Janus session {}", session_id_);
+        spdlog::info("Janus session {}", session_id_);
         start_keepalive();
         attach_publisher();
         return;
@@ -297,7 +295,7 @@ void JanusClient::handle_success(const json& msg) {
 
     if (op == PendingOp::kAttachPub) {
         pub_handle_ = data.value("id", static_cast<uint64_t>(0));
-        utils::log::info("Janus publisher handle {}", pub_handle_);
+        spdlog::info("Janus publisher handle {}", pub_handle_);
         join_as_publisher();
         return;
     }
@@ -416,14 +414,14 @@ void JanusClient::handle_trickle(const json& msg) {
     }
     const auto& cand = msg.at("candidate");
     if (cand.value("completed", false)) {
-        utils::log::info("[janus] remote trickle completed handle={}",
+        spdlog::info("[janus] remote trickle completed handle={}",
                          handle_id);
         return;
     }
     const std::string mid = cand.value("sdpMid", "");
     const int idx = cand.value("sdpMLineIndex", 0);
     const std::string candidate = cand.value("candidate", "");
-    utils::log::info("[janus] remote trickle handle={} mid={} idx={} cand={}",
+    spdlog::info("[janus] remote trickle handle={} mid={} idx={} cand={}",
                      handle_id, mid, idx, candidate.substr(0, 120));
     if (!candidate.empty()) {
         remote_candidate.emit(handle_id, mid, idx, candidate);

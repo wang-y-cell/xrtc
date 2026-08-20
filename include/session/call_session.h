@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "api/scoped_refptr.h"
-#include "component/signal_and_slots/signal_and_slots.h"
+#include "concurrency/signal_and_slots/signal_and_slots.h"
 #include <janus/janus_client.h>
 #include <media/remote_video_sink.h>
 #include <media/vcm_capture.h>
@@ -16,7 +16,7 @@
 
 namespace xrtc {
 
-template<typename T>
+template <typename T = void>
 using slots_t = utils::slots_t<T>;
 
 /// 串联 Janus 信令与 Publisher/Subscriber PeerConnection（无 Qt）
@@ -39,16 +39,16 @@ public:
 private:
     void notifyJoinResult(XRtcError error, const std::string& message);
     void bindJanusSignals();
-    slots_t<void> onJoinedAsPublisher();
-    slots_t<void> onPublishers(const std::vector<JanusPublisherInfo>& pubs);
-    slots_t<void> onPublisherLeft(uint64_t feed_id, const std::string& display);
-    slots_t<void> onPublisherAnswer(const JanusJsep& jsep);
-    slots_t<void> onSubscriberOffer(uint64_t feed_id, uint64_t handle_id,
-                              const JanusJsep& offer);
-    slots_t<void> onRemoteCandidate(uint64_t handle_id, const std::string& mid, int idx,
-                                    const std::string& cand);
-    slots_t<void> onJanusError(const std::string& err);
-    slots_t<void> onJanusDestroyed();
+    slots_t<> onJoinedAsPublisher();
+    slots_t<> onPublishers(const std::vector<JanusPublisherInfo>& pubs);
+    slots_t<> onPublisherLeft(uint64_t feed_id, const std::string& display);
+    slots_t<> onPublisherAnswer(const JanusJsep& jsep);
+    slots_t<> onSubscriberOffer(uint64_t feed_id, uint64_t handle_id,
+                                const JanusJsep& offer);
+    slots_t<> onRemoteCandidate(uint64_t handle_id, const std::string& mid,
+                                int idx, const std::string& cand);
+    slots_t<> onJanusError(const std::string& err);
+    slots_t<> onJanusDestroyed();
     XRtcStatus ensureLocalMedia();
     void createPublisherPc();
     void subscribeFeed(const JanusPublisherInfo& info);
@@ -63,6 +63,8 @@ private:
     bool active_ = false;
     bool join_notified_ = false;
 
+    /// Beast 线程 emit → Queued 到此 worker；槽内再 PostTask 到 WebRTC api_thread
+    std::unique_ptr<utils::worker_thread> signal_thread_;
     std::unique_ptr<JanusClient> janus_;
     std::vector<utils::scoped_connection> janus_conns_;
 

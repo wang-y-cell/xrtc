@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 
-#include "component/result/expected.h"
+#include "reliability/result/expected.h"
 #include <xrtc/ixrtc_engine.h>
 
 namespace xrtc {

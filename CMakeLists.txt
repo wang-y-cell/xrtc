@@ -15,12 +15,12 @@ add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/json/single_include)
 
-# ---------- third_party: spdlog (header-only, demo log backend only) ----------
+# ---------- third_party: spdlog (header-only) ----------
 add_library(spdlog_header INTERFACE)
 target_include_directories(spdlog_header INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog/include)
 
-# ---------- utils framework (header-only: signal / result / log) ----------
+# ---------- utils framework (header-only: signal / result / concurrency) ----------
 add_subdirectory(utils EXCLUDE_FROM_ALL)
 
 # ---------- Boost (Beast/Asio header-only WebSocket) ----------
@@ -64,6 +64,7 @@ target_link_libraries(xrtc
     PUBLIC
         webrtc
         utils::utils
+        spdlog_header
     PRIVATE
         nlohmann_json
         Boost::headers

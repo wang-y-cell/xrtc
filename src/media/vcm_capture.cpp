@@ -47,16 +47,16 @@ bool VcmCapture::start() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
-                log::error("视频采集模块未初始化");
+                spdlog::error("视频采集模块未初始化");
                 error = XRtcError::kVideoSourceNotInit;
                 break;
             }
             if (_vcm->StartCapture(_capability) != 0) {
-                log::warn("开始采集失败, device_id: {}", _vcm->CurrentDeviceName());
+                spdlog::warn("开始采集失败, device_id: {}", _vcm->CurrentDeviceName());
                 error = XRtcError::kVideoSourceStartFailed;
                 break;
             }
-            log::debug("开始采集成功, device_id: {}", _vcm->CurrentDeviceName());
+            spdlog::debug("开始采集成功, device_id: {}", _vcm->CurrentDeviceName());
         } while (false);
 
         XRtcEngineObserver* observer = XRtcGlobal::instance().observer();
@@ -72,7 +72,7 @@ bool VcmCapture::stop() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
-                log::error("视频采集模块未初始化");
+                spdlog::error("视频采集模块未初始化");
                 error = XRtcError::kVideoSourceNotInit;
                 break;
             }
@@ -104,7 +104,7 @@ bool VcmCapture::init(size_t width, size_t height, int fps,
     //根据设备id创建视频采集模块
     _vcm = webrtc::VideoCaptureFactory::Create(device_id.c_str());
     if (!_vcm) {
-        log::error("创建视频采集模块失败, device_id: {}", device_id);
+        spdlog::error("创建视频采集模块失败, device_id: {}", device_id);
         return false;
     }
 

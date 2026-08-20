@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "component/signal_and_slots/signal_and_slots.h"
+#include "concurrency/signal_and_slots/signal_and_slots.h"
 #include <xrtc/xrtc_result.h>
 
 namespace xrtc {

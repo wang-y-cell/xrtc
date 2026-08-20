@@ -7,15 +7,26 @@
 namespace xrtc {
 
 CallSession::CallSession() {
-    // Janus 在 Beast 线程 emit；亲和 loop 置空以 Direct，再 PostTask 到 api_thread
-    move_to_thread(static_cast<utils::event_loop*>(nullptr));
+    // 新 utils：亲和绑 utils::thread*；跨线程需目标 loop 在泵，否则 emit 会丢。
+    // 专用 worker 泵事件：Beast emit → Queued → 本线程槽 → PostTask(api_thread)
+    signal_thread_ = std::make_unique<utils::worker_thread>();
+    signal_thread_->start();
+    move_to_thread(signal_thread_.get());
+
     janus_ = std::make_unique<JanusClient>();
+    janus_->move_to_thread(signal_thread_.get());
     bindJanusSignals();
 }
 
 CallSession::~CallSession() {
     invalidate();
     Stop();
+    janus_conns_.clear();
+    janus_.reset();
+    if (signal_thread_) {
+        signal_thread_->stop();
+        signal_thread_.reset();
+    }
 }
 
 void CallSession::bindJanusSignals() {
@@ -39,7 +50,7 @@ void CallSession::bindJanusSignals() {
         utils::connect(janus_->destroyed, this, &CallSession::onJanusDestroyed));
 }
 
-slots_t<void> CallSession::onPublishers(
+slots_t<> CallSession::onPublishers(
     const std::vector<JanusPublisherInfo>& pubs) {
     XRtcGlobal::instance().api_thread()->PostTask([this, pubs]() {
         for (const auto& p : pubs) {
@@ -49,7 +60,7 @@ slots_t<void> CallSession::onPublishers(
     return {};
 }
 
-slots_t<void> CallSession::onPublisherLeft(uint64_t feed_id,
+slots_t<> CallSession::onPublisherLeft(uint64_t feed_id,
                                               const std::string&) {
     XRtcGlobal::instance().api_thread()->PostTask([this, feed_id]() {
         for (auto it = handle_to_feed_.begin(); it != handle_to_feed_.end();) {
@@ -70,7 +81,7 @@ slots_t<void> CallSession::onPublisherLeft(uint64_t feed_id,
     return {};
 }
 
-slots_t<void> CallSession::onPublisherAnswer(const JanusJsep& jsep) {
+slots_t<> CallSession::onPublisherAnswer(const JanusJsep& jsep) {
     XRtcGlobal::instance().api_thread()->PostTask([this, jsep]() {
         if (publisher_pc_) {
             publisher_pc_->SetRemoteDescription(jsep.type, jsep.sdp);
@@ -79,7 +90,7 @@ slots_t<void> CallSession::onPublisherAnswer(const JanusJsep& jsep) {
     return {};
 }
 
-slots_t<void> CallSession::onSubscriberOffer(uint64_t feed_id,
+slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                                                 uint64_t handle_id,
                                                 const JanusJsep& offer) {
     XRtcGlobal::instance().api_thread()->PostTask(
@@ -105,7 +116,7 @@ slots_t<void> CallSession::onSubscriberOffer(uint64_t feed_id,
                     webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>
                         track) { attachRemoteTrack(feed_id, track); };
             pcb.on_error = [](const std::string& err) {
-                utils::log::error("Subscriber PC error: {}", err);
+                spdlog::error("Subscriber PC error: {}", err);
             };
 
             auto factory =
@@ -130,7 +141,7 @@ slots_t<void> CallSession::onSubscriberOffer(uint64_t feed_id,
     return {};
 }
 
-slots_t<void> CallSession::onRemoteCandidate(uint64_t handle_id,
+slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
                                                 const std::string& mid, int idx,
                                                 const std::string& cand) {
     XRtcGlobal::instance().api_thread()->PostTask(
@@ -149,9 +160,9 @@ slots_t<void> CallSession::onRemoteCandidate(uint64_t handle_id,
     return {};
 }
 
-slots_t<void> CallSession::onJanusError(const std::string& err) {
+slots_t<> CallSession::onJanusError(const std::string& err) {
     XRtcGlobal::instance().api_thread()->PostTask([this, err]() {
-        utils::log::error("[session] signaling error: {}", err);
+        spdlog::error("[session] signaling error: {}", err);
         active_ = false;
         if (janus_) {
             janus_->Disconnect();
@@ -163,8 +174,8 @@ slots_t<void> CallSession::onJanusError(const std::string& err) {
     return {};
 }
 
-slots_t<void> CallSession::onJanusDestroyed() {
-    utils::log::info("Janus connection destroyed");
+slots_t<> CallSession::onJanusDestroyed() {
+    spdlog::info("Janus connection destroyed");
     return {};
 }
 
@@ -323,19 +334,19 @@ void CallSession::createPublisherPc() {
     publisher_pc_->CreateOffer();
 }
 
-slots_t<void> CallSession::onJoinedAsPublisher() {
+slots_t<> CallSession::onJoinedAsPublisher() {
     XRtcGlobal::instance().api_thread()->PostTask([this]() {
-        utils::log::info(
+        spdlog::info(
             "[session] onJoinedAsPublisher: starting local media + PC");
         auto st = ensureLocalMedia();
         if (!st) {
-            utils::log::error("[session] ensureLocalMedia failed: {}",
+            spdlog::error("[session] ensureLocalMedia failed: {}",
                               XRtcErrorToString(st.error()));
             notifyJoinResult(st.error(), "failed to start local media");
             return;
         }
         createPublisherPc();
-        utils::log::info("[session] notify join success");
+        spdlog::info("[session] notify join success");
         notifyJoinResult(XRtcError::kNOERROR, "joined");
     });
     return {};

@@ -87,7 +87,7 @@ XRtcGlobal::GetOrCreatePeerConnectionFactory() {
         /*audio_processing=*/nullptr);
 
     if (!pc_factory_) {
-        log::error("创建PeerConnectionFactory失败");
+        spdlog::error("创建PeerConnectionFactory失败");
     }
     return pc_factory_;
 }

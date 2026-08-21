@@ -158,6 +158,7 @@ struct WebsocketTransport::Impl {
 
     /**
       @brief 处理dns解析成功后或者解析失败后调用的回调
+      负责异步开启tcp连接
       @param ec 错误码
       @param results 解析结果
     */
@@ -183,6 +184,7 @@ struct WebsocketTransport::Impl {
 
     /**
       @brief 处理tcp连接到服务端之后调用的回调
+      如果连接成功就处理websocket握手请求
       @param ec 错误码
     */
     void on_connect(beast::error_code ec) {
@@ -332,6 +334,7 @@ struct WebsocketTransport::Impl {
         }
     }
 
+    ///网络线程运行的事件循环
     void service_loop() {
         spdlog::info("[ws] service_loop enter");
         try {
@@ -382,10 +385,12 @@ XRtcStatus WebsocketTransport::open(const std::string& url) {
     spdlog::info("[ws] open url={}", url);
     close();
 
+    //解析url地址,失败返回错误
     if (!impl_->parse_url(url)) {
         spdlog::info("[ws] invalid url");
         return xrtc_err(XRtcError::kInvalidParam);
     }
+    //如果使用的ssl,则返回错误(因为目前不支持ssl)
     if (impl_->use_ssl) {
         impl_->notify_error("wss not supported (Boost.Beast without OpenSSL)");
         return xrtc_err(XRtcError::kSignalingFailed);
@@ -393,6 +398,7 @@ XRtcStatus WebsocketTransport::open(const std::string& url) {
     spdlog::info("[ws] parsed host={} port={} path={}", impl_->address,
                      impl_->port, impl_->path);
 
+    //重置websocket连接状态
     impl_->closing = false;
     impl_->error_notified = false;
     impl_->connected = false;
@@ -402,14 +408,17 @@ XRtcStatus WebsocketTransport::open(const std::string& url) {
     impl_->ws.reset();
     impl_->ioc = std::make_unique<net::io_context>();
 
+    //创建一个网络线程,用来处理网络事件
     impl_->thread = std::thread([this]() { impl_->service_loop(); });
     return xrtc_ok();
 }
 
 void WebsocketTransport::send_text(const std::string& text) {
+    //如果网络线程不可用，或者ioc不可用，则返回
     if (!impl_->thread.joinable() || !impl_->ioc) {
         return;
     }
+    //将消息添加到发送队列中
     impl_->enqueue_write(text);
 }
 

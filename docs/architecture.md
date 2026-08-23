@@ -125,8 +125,8 @@ sequenceDiagram
 
 | 模块 | 一句话 |
 |------|--------|
-| **XRtcGlobal** | 单例：WebRTC 三线程、PC Factory、全局 Observer |
-| **XRtcEngine** | `IXRtcEngine` 实现：设备、预览源、持有 CallSession |
+| **XRtcGlobal** | 单例：WebRTC 三线程、PC Factory、共享 ADM、全局 Observer |
+| **XRtcEngine** | `IXRtcEngine` 实现：持有 `VideoCaptureModule::DeviceInfo` + `AudioDeviceModule` 枚举设备，预览源、CallSession |
 | **CallSession** | 通话编排：Janus 事件 ↔ PC/采集 ↔ Observer |
 | **JanusClient** | VideoRoom 协议状态机 |
 | **WebsocketTransport** | Boost.Beast WebSocket（Pimpl） |

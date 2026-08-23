@@ -26,5 +26,13 @@
 | `*-->` | 组合 / 强拥有（`unique_ptr`） |
 | `o-->` | 聚合 / 引用持有 |
 | `..>` | 依赖 / 使用 |
+| `+--` | 嵌套类型（如 `VideoCaptureModule::DeviceInfo`） |
+
+## `XRtcEngine` 与 WebRTC 设备模块
+
+| 成员 | 类型 | 用途 |
+|------|------|------|
+| `video_device` | `unique_ptr<webrtc::VideoCaptureModule::DeviceInfo>` | 枚举摄像头（`get_video_device_info`） |
+| `audio_device` | `scoped_refptr<webrtc::AudioDeviceModule>` | 枚举麦克风；构造时交给 `XRtcGlobal::adm_` 供 PC Factory 共用 |
 
 其它结构图（分层 / 时序 / 线程）仍在 [architecture-plantuml.md](./architecture-plantuml.md) 与 `plantuml/01~04-*.puml`。

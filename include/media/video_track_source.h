@@ -13,13 +13,17 @@ class XrtcVideoTrackSource : public webrtc::VideoTrackSource {
 public:
     static webrtc::scoped_refptr<XrtcVideoTrackSource> Create();
 
+    ///@brief 将视频推入broadcaster_中
     void PushFrame(const webrtc::VideoFrame& frame);
+    ///@brief 设置视频源是否为实时状态
+    ///@param live 是否为实时状态
     void SetLive(bool live);
 
 protected:
     XrtcVideoTrackSource();
     ~XrtcVideoTrackSource() override = default;
 
+    ///@brief 获取视频源接口_broadcaster_地址
     webrtc::VideoSourceInterface<webrtc::VideoFrame>* source() override;
 
 private:

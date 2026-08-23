@@ -19,7 +19,9 @@ public:
     void OnFrame(const webrtc::VideoFrame& frame) override;
 
 private:
+    ///@brief 远端视频流的ID
     uint64_t feed_id_ = 0;
+    ///@brief 回调函数,表示将OnFrame获得的数据转换为ARGB格式后,再交给上层回调
     FrameCallback callback_;
 };
 

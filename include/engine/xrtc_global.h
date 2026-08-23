@@ -77,8 +77,9 @@ private:
     */
     std::unique_ptr<webrtc::Thread> network_thread_;
     /**
-     *@brief 观察者
-     * 在set_observer函数中设置
+     *@brief 观察者,设置观察者时候,在观察者实现重载函数中,会调用观察者实现的重载函数
+     * 在set_observer函数中设置观察者对象
+     * 这样我们可以在任何地方调用观察者对象的函数,实现回调
     */
     XRtcEngineObserver* observer_ = nullptr;
 

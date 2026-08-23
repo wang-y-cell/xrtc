@@ -180,10 +180,12 @@ slots_t<> CallSession::onJanusDestroyed() {
 }
 
 void CallSession::Start(const XRTCJoinConfig& config) {
+    //如果已经处于通话状态,则通知上层已经处于通话状态
     if (active_) {
         notifyJoinResult(XRtcError::kAlreadyInCall, "already in call");
         return;
     }
+    //如果janus_ws_url为空,则通知上层参数错误
     if (config.janus_ws_url.empty()) {
         notifyJoinResult(XRtcError::kInvalidParam, "empty janus_ws_url");
         return;
@@ -192,8 +194,10 @@ void CallSession::Start(const XRTCJoinConfig& config) {
     config_ = config;
     join_notified_ = false;
     active_ = true;
+    //连接janus服务器
     auto st = janus_->Connect(config_);
     if (!st) {
+        //如果连接失败,则通知上层连接失败
         active_ = false;
         notifyJoinResult(st.error(),
                          std::string(XRtcErrorToString(st.error())));
@@ -233,6 +237,8 @@ void CallSession::Stop() {
     }
 }
 
+///@brief 静音音频
+///@param mute 是否静音
 void CallSession::MuteAudio(bool mute) {
     XRtcGlobal::instance().api_thread()->PostTask([this, mute]() {
         if (publisher_pc_) {

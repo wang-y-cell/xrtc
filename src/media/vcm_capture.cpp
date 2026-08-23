@@ -43,7 +43,7 @@ void VcmCapture::set_track_source(
 }
 
 bool VcmCapture::start() {
-    _current_thread->PostTask([this]() {
+    auto do_start = [this]() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
@@ -52,23 +52,32 @@ bool VcmCapture::start() {
                 break;
             }
             if (_vcm->StartCapture(_capability) != 0) {
-                spdlog::warn("开始采集失败, device_id: {}", _vcm->CurrentDeviceName());
+                spdlog::warn("开始采集失败, device_id: {}",
+                             _vcm->CurrentDeviceName());
                 error = XRtcError::kVideoSourceStartFailed;
                 break;
             }
-            spdlog::debug("开始采集成功, device_id: {}", _vcm->CurrentDeviceName());
+            spdlog::debug("开始采集成功, device_id: {}",
+                          _vcm->CurrentDeviceName());
         } while (false);
 
         XRtcEngineObserver* observer = XRtcGlobal::instance().observer();
         if (observer) {
             observer->video_source_start_event(this, error);
         }
-    });
+    };
+
+  // 已在采集线程则同步执行，避免调用方紧接着 delete 时任务尚未运行。
+    if (_current_thread->IsCurrent()) {
+        do_start();
+    } else {
+        _current_thread->BlockingCall(do_start);
+    }
     return true;
 }
 
 bool VcmCapture::stop() {
-    _current_thread->PostTask([this]() {
+    auto do_stop = [this]() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
@@ -87,7 +96,14 @@ bool VcmCapture::stop() {
         if (observer) {
             observer->video_source_stop_event(this, error);
         }
-    });
+    };
+
+    // 已在采集线程则同步执行，避免调用方紧接着 delete 时任务尚未运行。
+    if (_current_thread->IsCurrent()) {
+        do_stop();
+    } else {
+        _current_thread->BlockingCall(do_stop);
+    }
     return true;
 }
 
@@ -164,12 +180,20 @@ void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
 }
 
 void VcmCapture::destroy() {
-    if (_vcm) {
-        _vcm->StopCapture();
-        _vcm->DeRegisterCaptureDataCallback();
-        _vcm = nullptr;
+    auto do_destroy = [this]() {
+        if (_vcm) {
+            _vcm->StopCapture();
+            _vcm->DeRegisterCaptureDataCallback();
+            _vcm = nullptr;
+        }
+        track_source_ = nullptr;
+    };
+
+    if (_current_thread->IsCurrent()) {
+        do_destroy();
+    } else {
+        _current_thread->BlockingCall(do_destroy);
     }
-    track_source_ = nullptr;
 }
 
 }  // namespace xrtc

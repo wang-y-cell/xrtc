@@ -19,21 +19,30 @@ namespace xrtc {
 template <typename T = void>
 using slots_t = utils::slots_t<T>;
 
-/// 串联 Janus 信令与 Publisher/Subscriber PeerConnection（无 Qt）
+/// 串联 Janus 信令与 Publisher/Subscriber PeerConnection
 class CallSession : public utils::object {
 public:
+    //将当前对象和janusclient绑定到同一个线程,并设置信号与槽连接
     CallSession();
     ~CallSession() override;
 
     CallSession(const CallSession&) = delete;
     CallSession& operator=(const CallSession&) = delete;
 
+    ///@brief 启动通话,包括连接janus服务器
+    ///@param config 加入房间的配置
     void Start(const XRTCJoinConfig& config);
+    ///@brief 停止通话,包括关闭Publisher/Subscriber PeerConnection,断开janus服务器
     void Stop();
 
+    ///@brief 静音音频
+    ///@param mute 是否静音
     void MuteAudio(bool mute);
+    ///@brief 静音视频
+    ///@param mute 是否静音
     void MuteVideo(bool mute);
 
+    ///@brief 获取通话状态
     bool active() const { return active_; }
 
 private:

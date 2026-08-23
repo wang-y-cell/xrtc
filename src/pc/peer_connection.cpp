@@ -128,30 +128,40 @@ PeerConnectionHandler::~PeerConnectionHandler() {
     Close();
 }
 
-bool PeerConnectionHandler::Init(
-    const std::vector<XRTCIceServer>& ice_servers) {
+bool PeerConnectionHandler::Init
+(const std::vector<XRTCIceServer>& ice_servers) {
+    //在构造函数指定,如果还是nullptr,则返回false
     if (!factory_) {
         return false;
     }
 
+    //创建peerconnection是使用的配置结构体
     webrtc::PeerConnectionInterface::RTCConfiguration config;
+    //使用统一计划SDP语义,使用 Unified Plan SDP（现代 WebRTC 默认方式）
     config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
 
+    //如果传入的ice_servers为空,则使用默认的STUN服务器
     if (ice_servers.empty()) {
+        //创建一个ice服务器结构体
         webrtc::PeerConnectionInterface::IceServer stun;
+        //设置ice服务器的服务器地址,这里的默认地址是google的stun服务器
         stun.uri = "stun:stun.l.google.com:19302";
+        //将ice服务器结构体添加到配置结构体中
         config.servers.push_back(stun);
-    } else {
-        for (const auto& s : ice_servers) {
-            webrtc::PeerConnectionInterface::IceServer server;
-            server.uri = s.uri;
-            server.username = s.username;
-            server.password = s.password;
-            config.servers.push_back(server);
+    } else { //如果我们自己填写了ice服务器,则将ice服务器结构体添加到配置结构体中
+        for (const auto& s : ice_servers) { //遍历ice服务器结构体
+            webrtc::PeerConnectionInterface::IceServer server; //创建一个ice服务器结构体
+            server.uri = s.uri; //设置ice服务器的服务器地址
+            server.username = s.username; //设置ice服务器的服务器用户名
+            server.password = s.password; //设置ice服务器的服务器密码
+            config.servers.push_back(server); //将ice服务器结构体添加到配置结构体中
         }
     }
-
+    //创建peerconnection依赖的结构体,告诉工厂观察者是谁,可选的自定义工厂有哪些
+    //构造函数需要一个 PeerConnectionObserver*。
+    //PeerConnectionHandler 继承了 webrtc::PeerConnectionObserver
     webrtc::PeerConnectionDependencies deps(this);
+    //创建peerconnection,返回一个结果,如果结果是ok的,则将peerconnection赋值给pc_
     auto result =
         factory_->CreatePeerConnectionOrError(config, std::move(deps));
     if (!result.ok()) {
@@ -175,9 +185,11 @@ void PeerConnectionHandler::Close() {
 bool PeerConnectionHandler::AddTrack(
     webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
     const std::vector<std::string>& stream_ids) {
+    //如果peerconnection为空或者媒体轨道为空,则返回false
     if (!pc_ || !track) {
         return false;
     }
+    //将媒体轨道添加到peerconnection中,返回一个结果,如果结果是ok的,则返回true
     auto result = pc_->AddTrack(track, stream_ids);
     if (!result.ok()) {
         RTC_LOG(LS_ERROR) << "AddTrack failed: " << result.error().message();
@@ -280,24 +292,32 @@ void PeerConnectionHandler::FlushPendingIceCandidates() {
 }
 
 void PeerConnectionHandler::MuteAudio(bool mute) {
+    //没有pc就返回
     if (!pc_) {
         return;
     }
+    //遍历所有 Sender（本端往外发的轨）
     for (const auto& sender : pc_->GetSenders()) {
+        //找到 音频轨（kAudioKind）
         auto track = sender->track();
         if (track && track->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
+            //设置音频轨是否启用
             track->set_enabled(!mute);
         }
     }
 }
 
 void PeerConnectionHandler::MuteVideo(bool mute) {
+    //没有pc就返回
     if (!pc_) {
         return;
     }
+    //遍历所有 Sender（本端往外发的轨）
     for (const auto& sender : pc_->GetSenders()) {
+        //找到 视频轨（kVideoKind）
         auto track = sender->track();
         if (track && track->kind() == webrtc::MediaStreamTrackInterface::kVideoKind) {
+            //设置视频轨是否启用
             track->set_enabled(!mute);
         }
     }

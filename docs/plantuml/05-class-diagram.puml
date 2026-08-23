@@ -21,7 +21,17 @@ package "webrtc (外部)" #EEEEEE {
   interface "VideoSinkInterface<VideoFrame>" as VideoSink
   class PeerConnectionFactoryInterface
   class PeerConnectionInterface
-  class AudioDeviceModule
+  class AudioDeviceModule {
+    +Init()
+    +RecordingDevices()
+    +RecordingDeviceName(...)
+  }
+  class VideoCaptureModule {
+  }
+  class "VideoCaptureModule::DeviceInfo" as VcmDeviceInfo {
+    +NumberOfDevices()
+    +GetDeviceName(...)
+  }
   class Thread
 }
 
@@ -102,9 +112,11 @@ package "engine" #EAF7EA {
   }
 
   class XRtcEngine {
-    -video_device
-    -audio_device
-    -call_session_
+    -video_device : unique_ptr<VideoCaptureModule::DeviceInfo>
+    -audio_device : scoped_refptr<AudioDeviceModule>
+    -call_session_ : unique_ptr<CallSession>
+    +get_video_device_info()
+    +get_audio_device_info()
     +join(config)
     +leave()
     +create_video_source(...)
@@ -233,11 +245,14 @@ VideoSink <|.. RemoteVideoSink
 ' ========== 组合 / 依赖 ==========
 Widget "1" o--> "1" IXRtcEngine : engine
 XRtcEngine "1" *--> "0..1" CallSession : call_session_
-XRtcEngine ..> XRtcGlobal : 使用单例
+XRtcEngine "1" *--> "0..1" VcmDeviceInfo : video_device\n(枚举摄像头)
+XRtcEngine "1" o--> "0..1" AudioDeviceModule : audio_device\n(枚举麦克风)
+XRtcEngine ..> XRtcGlobal : 使用单例 /\nInitAudioDeviceModule
 XRtcGlobal "1" o--> "0..1" XRtcEngineObserver : observer_
 XRtcGlobal o--> PeerConnectionFactoryInterface : pc_factory_
 XRtcGlobal o--> Thread : api/worker/network
-XRtcGlobal o--> AudioDeviceModule : adm_
+XRtcGlobal o--> AudioDeviceModule : adm_\n(与 Engine.audio_device 同实例)
+VideoCaptureModule +-- VcmDeviceInfo
 
 CallSession "1" *--> "1" JanusClient : janus_
 CallSession "1" *--> "0..1" PeerConnectionHandler : publisher_pc_
@@ -267,6 +282,13 @@ note right of CallSession
   编排中心：连接 Janus 信号，
   PostTask 到 api_thread，
   再回调 XRtcEngineObserver
+end note
+
+note right of XRtcEngine
+  构造时：
+  video_device = VideoCaptureFactory::CreateDeviceInfo()
+  audio_device = CreateAudioDeviceModule(...)
+  并 InitAudioDeviceModule 交给 Global
 end note
 
 note bottom of WebsocketTransport

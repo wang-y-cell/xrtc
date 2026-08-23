@@ -157,9 +157,12 @@ void XRtcEngine::leave() {
             call_session_->Stop();
         }
     };
+    //如果当前线程是api线程,则直接调用stop函数
     if (webrtc::Thread::Current() == XRtcGlobal::instance().api_thread()) {
         stop();
     } else {
+        //如果当前线程不是api线程,则将stop函数放入api线程中执行,如果在api线程阻塞调用
+        //就会出现死锁
         XRtcGlobal::instance().api_thread()->BlockingCall(stop);
     }
 }

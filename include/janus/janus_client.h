@@ -71,6 +71,7 @@ struct JanusPublisherInfo {
     std::string display; ///对方进房时填的显示名
 };
 
+///@brief JanusClient是客户端与Janus服务器建立WebSocket连接的类
 class JanusClient : public utils::object {
 public:
     JanusClient();

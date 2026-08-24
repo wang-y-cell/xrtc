@@ -380,7 +380,7 @@ void JanusClient::handle_event(const json& msg) {
     const std::string videoroom = data.value("videoroom", "");
     const uint64_t handle_id = msg.value("sender", static_cast<uint64_t>(0));
 
-    ///收集发布者信息
+    ///收集发布者信息,这些发布者是会议中存在的人
     auto collect_publishers = [](const json& data_obj) {
         std::vector<JanusPublisherInfo> pubs;
         if (!data_obj.contains("publishers") ||
@@ -398,13 +398,13 @@ void JanusClient::handle_event(const json& msg) {
 
     //如果刚加入房间成功了,将发布者信息发送给call_session
     if (videoroom == "joined") {
-        //发送call_session的joined_as_publisher信号
+        //发送call_session的joined_as_publisher信号,生成sdp offer
         joined_as_publisher.emit();
-        auto pubs = collect_publishers(data);
+        auto pubs = collect_publishers(data); //收集发布者信息,这些发布者是会议中存在的人
         //如果发布者信息不为空,则发送发布者信息给call_session
         if (!pubs.empty()) {
             //将发布者信息发送给call_session
-            publishers.emit(pubs); //这里连接的是call_session的槽函数
+            publishers.emit(pubs); //这里连接的是call_session的槽函数,逐个订阅房间中存在的发布者,也就是发送attach,需要获得janus的success信息
         }
     } else if (videoroom == "event") { //进房之后的房间动态
         //有人开始推流,退出,房间出错,都会进入这里
@@ -436,8 +436,10 @@ void JanusClient::handle_event(const json& msg) {
     //解析sdp信息,从msg读取sdp信息给out
     parse_jsep(msg, &jsep);
     if (!jsep.sdp.empty()) { //如果sdp信息不为空
-        //如果发布者句柄和jsep的类型为answer,则发送publisher_answer信号
+        //如果当前是我们的消息并且是janus给我们的回复
         if (handle_id == pub_handle_ && jsep.type == "answer") {
+            //收到janus对我们的确认回复,这里是我们发送sdp之后,janus回复我们的消息
+            //调用槽函数,我们需要将janus的sdp注册到我们本地中
             publisher_answer.emit(jsep);
         } else if (jsep.type == "offer") {
             uint64_t feed = 0;

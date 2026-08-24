@@ -53,6 +53,7 @@ void CallSession::bindJanusSignals() {
 slots_t<> CallSession::onPublishers(
     const std::vector<JanusPublisherInfo>& pubs) {
     XRtcGlobal::instance().api_thread()->PostTask([this, pubs]() {
+        //逐个订阅发布者,如果之前已经订阅了就跳过,订阅的过程中会发送相应的信息给janus
         for (const auto& p : pubs) {
             subscribeFeed(p);
         }
@@ -267,34 +268,44 @@ void CallSession::notifyJoinResult(XRtcError error,
 }
 
 XRtcStatus CallSession::ensureLocalMedia() {
+    //WebRTC 全局工厂，用来创建 AudioTrack、VideoTrack 等。拿不到就返回 kMediaStartFailed
     auto factory = XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
     if (!factory) {
         return xrtc_err(XRtcError::kMediaStartFailed);
     }
 
+    //创建视频源,如果没有创建就创建
     if (!video_source_) {
         video_source_ = XrtcVideoTrackSource::Create();
     }
 
+    //校验摄像头id,如果没有摄像头id,返回错误参数
     if (config_.video_device_id.empty()) {
         return xrtc_err(XRtcError::kInvalidParam);
     }
 
+    //创建并启动摄像头采集, 如果没有创建就创建
     if (!capture_) {
         capture_ = VcmCapture::create(static_cast<size_t>(config_.width),
                                       static_cast<size_t>(config_.height),
                                       config_.fps, config_.video_device_id);
+        //如果创建失败,返回错误
         if (!capture_) {
             return xrtc_err(XRtcError::kMediaStartFailed);
         }
+        //设置视频源
         capture_->set_track_source(video_source_);
+        //启动摄像头采集
         capture_->start();
     }
 
+    //创建音频轨道
     if (!audio_track_) {
+        //用平台默认麦克风创建音频轨（AudioOptions() 为空表示默认配置）
         auto audio_source = factory->CreateAudioSource(webrtc::AudioOptions());
         audio_track_ = factory->CreateAudioTrack("audio0", audio_source.get());
     }
+    //创建视频轨道
     if (!video_track_) {
         video_track_ = factory->CreateVideoTrack(video_source_, "video0");
     }
@@ -344,6 +355,7 @@ slots_t<> CallSession::onJoinedAsPublisher() {
     XRtcGlobal::instance().api_thread()->PostTask([this]() {
         spdlog::info(
             "[session] onJoinedAsPublisher: starting local media + PC");
+        //创建并开启摄像头,启动视频采集
         auto st = ensureLocalMedia();
         if (!st) {
             spdlog::error("[session] ensureLocalMedia failed: {}",
@@ -351,6 +363,7 @@ slots_t<> CallSession::onJoinedAsPublisher() {
             notifyJoinResult(st.error(), "failed to start local media");
             return;
         }
+        //创建音频源和视频源,添加视频轨道和音频轨道,创建offer,设置本地sdp描述,并发送给janus
         createPublisherPc();
         spdlog::info("[session] notify join success");
         notifyJoinResult(XRtcError::kNOERROR, "joined");

@@ -313,20 +313,21 @@ void Widget::on_video_frame(xrtc::IXRtcMediaSource*,
     {
         std::lock_guard<std::mutex> lock(preview_mutex_);
         pending_preview_ = std::move(copied);
-        if (!preview_scheduled_) {
+        if (!preview_scheduled_) { //如果没有排队渲染任务,设置渲染任务为true
             preview_scheduled_ = true;
             schedule = true;
         }
     }
 
-    if (schedule) {
+    if (schedule) { //没有渲染任务了,就渲染当前帧
         QMetaObject::invokeMethod(
             this, [this]() { render_preview_frame(); }, Qt::QueuedConnection);
     }
 }
 
 /**
- * @brief 在 UI 线程渲染本地预览帧
+ * @brief 在 UI 线程渲染本地预览帧pending_preview_
+ * pending_preview_是通过onframe函数的帧
  * 取出待渲染图像并设置到 pixmap item 上，同时让画面自适应显示区域。
  */
 void Widget::render_preview_frame() {
@@ -334,7 +335,7 @@ void Widget::render_preview_frame() {
     {
         std::lock_guard<std::mutex> lock(preview_mutex_);
         image = std::move(pending_preview_);
-        preview_scheduled_ = false;
+        preview_scheduled_ = false; //没有待渲染的帧了
     }
     if (image.isNull() || !preview_item_) {
         return;

@@ -18,41 +18,322 @@
 
 
 /*
-客户端与Janus服务器建立WebSocket连接的请求头
-
-GET /janus HTTP/1.1
-Upgrade: websocket
-Host: localhost:8188
-Origin: http://localhost
-Sec-WebSocket-Key: <随机生成的Base64字符串>
-Sec-WebSocket-Version: 13
-
-janus服务器的响应头
-
-HTTP/1.1 101 Switching Protocols
-Upgrade: websocket
-Connection: Upgrade
-Sec-WebSocket-Accept: <根据客户端Key计算出的Base64字符串>
-
-客户端发送的创建会话的请求
-
-{
-  "janus": "create",
-  "transaction": "aAMxRfsTsVVQ"
-}
-
-janus服务器返回的创建会话的响应
-
-{
-  "janus": "success",
-  "transaction": "aAMxRfsTsVVQ",
-  "data": {
-    "id": 5109637625847547
-  }
-}
-
-
-*/
+ * JanusClient 与 Janus Gateway 的信令协议说明
+ *
+ * 传输层：WebSocket（WebsocketTransport 负责握手与收发文本帧）
+ * 应用层：每条消息为 JSON 文本，通过 "janus" 字段区分类型
+ * 关联请求：客户端发送时生成 "transaction"，服务端原样回传，用于匹配异步响应
+ *
+ * ── 发布者完整流程（Connect 后自动串联）────────────────────────────────
+ *
+ *   WebSocket 握手
+ *     → create（创建 Session）
+ *     → attach（挂载 janus.plugin.videoroom，获得 pub_handle_）
+ *     → message/join（以 publisher 身份进房）
+ *     → [本地创建 Offer]
+ *     → message/configure + jsep（Publish 推流）
+ *     → trickle 双向交换 ICE
+ *     → event 收到 answer，开始通话
+ *
+ * ── 订阅者流程（收到 publishers 信号后按需触发）────────────────────────
+ *
+ *   attach（为每个 feed 新建 subscriber handle）
+ *     → message/join（ptype=subscriber, feed=<远端 id>）
+ *     → event 收到 offer
+ *     → [本地创建 Answer]
+ *     → message/start + jsep
+ *     → trickle 双向交换 ICE
+ *
+ * ── 断开流程（Disconnect）──────────────────────────────────────────────
+ *
+ *   message/unpublish → destroy → 关闭 WebSocket
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 1. WebSocket 握手
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 客户端请求头：
+ *   GET /janus HTTP/1.1
+ *   Upgrade: websocket
+ *   Host: localhost:8188
+ *   Origin: http://localhost
+ *   Sec-WebSocket-Key: <随机 Base64>
+ *   Sec-WebSocket-Version: 13
+ *
+ * 服务端响应头：
+ *   HTTP/1.1 101 Switching Protocols
+ *   Upgrade: websocket
+ *   Connection: Upgrade
+ *   Sec-WebSocket-Accept: <根据 Key 计算的 Base64>
+ *
+ * 握手成功后触发 on_ws_connected() → create_session()
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 2. 创建 Session（create_session）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 客户端 → 服务端：
+ *   { "janus": "create", "transaction": "tx-1" }
+ *
+ * 服务端 → 客户端（janus: success）：
+ *   {
+ *     "janus": "success",
+ *     "transaction": "tx-1",
+ *     "data": { "id": 5109637625847547 }   // → session_id_
+ *   }
+ *
+ * 成功后：start_keepalive() + attach_publisher()
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 3. 挂载 VideoRoom 插件（attach_publisher / attach_subscriber）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 客户端 → 服务端：
+ *   {
+ *     "janus": "attach",
+ *     "plugin": "janus.plugin.videoroom",
+ *     "session_id": <session_id_>,
+ *     "transaction": "tx-2"
+ *   }
+ *
+ * 服务端 → 客户端（janus: success）：
+ *   {
+ *     "janus": "success",
+ *     "transaction": "tx-2",
+ *     "data": { "id": 12345678 }            // → pub_handle_ 或 subscriber handle
+ *   }
+ *
+ * 发布者 attach 成功后 → join_as_publisher()
+ * 订阅者 attach 成功后 → message/join（ptype=subscriber）
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 4. 以发布者身份进房（join_as_publisher）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 客户端 → 服务端：
+ *   {
+ *     "janus": "message",
+ *     "session_id": <session_id_>,
+ *     "handle_id": <pub_handle_>,
+ *     "transaction": "tx-3",
+ *     "body": {
+ *       "request": "join",
+ *       "ptype": "publisher",
+ *       "room": <room_id>,
+ *       "display": "<display_name>",
+ *       "pin": "<可选，房间密码>"
+ *     }
+ *   }
+ *
+ * 服务端 → 客户端（先 ack，再 event；ack 当前未处理）：
+ *   { "janus": "ack", "session_id": ..., "transaction": "tx-3" }
+ *
+ *   {
+ *     "janus": "event",
+ *     "session_id": ...,
+ *     "sender": <pub_handle_>,
+ *     "plugindata": {
+ *       "plugin": "janus.plugin.videoroom",
+ *       "data": {
+ *         "videoroom": "joined",
+ *         "room": 1234,
+ *         "id": 987654321,                 // 本端 feed id，供他人订阅
+ *         "private_id": 12345,
+ *         "publishers": [                  // 房间内已在推流的其他人（可为空）
+ *           { "id": 111, "display": "user-a", "audio_codec": "opus", "video_codec": "vp8" }
+ *         ]
+ *       }
+ *     }
+ *   }
+ *
+ * videoroom=="joined" → joined_as_publisher 信号；有 publishers 则 publishers 信号
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 5. 发布媒体（Publish）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 客户端 → 服务端：
+ *   {
+ *     "janus": "message",
+ *     "session_id": <session_id_>,
+ *     "handle_id": <pub_handle_>,
+ *     "transaction": "tx-4",
+ *     "body": { "request": "configure", "audio": true, "video": true },
+ *     "jsep": { "type": "offer", "sdp": "<本地 SDP>" }
+ *   }
+ *
+ * 服务端 → 客户端（janus: event，含 answer）：
+ *   {
+ *     "janus": "event",
+ *     "session_id": ...,
+ *     "sender": <pub_handle_>,
+ *     "plugindata": {
+ *       "plugin": "janus.plugin.videoroom",
+ *       "data": { "videoroom": "event", "configured": "ok" }
+ *     },
+ *     "jsep": { "type": "answer", "sdp": "<Janus SDP>" }
+ *   }
+ *
+ * jsep.type=="answer" 且 sender==pub_handle_ → publisher_answer 信号
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 6. ICE 候选交换（SendTrickle / SendTrickleComplete）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 客户端 → 服务端（单个候选）：
+ *   {
+ *     "janus": "trickle",
+ *     "session_id": <session_id_>,
+ *     "handle_id": <handle_id>,
+ *     "transaction": "tx-5",
+ *     "candidate": {
+ *       "candidate": "candidate:...",
+ *       "sdpMid": "0",
+ *       "sdpMLineIndex": 0
+ *     }
+ *   }
+ *
+ * 客户端 → 服务端（候选收集完毕）：
+ *   {
+ *     "janus": "trickle",
+ *     "session_id": <session_id_>,
+ *     "handle_id": <handle_id>,
+ *     "transaction": "tx-6",
+ *     "candidate": { "completed": true }
+ *   }
+ *
+ * 服务端 → 客户端（janus: trickle 或 event 内嵌 candidate）：
+ *   {
+ *     "janus": "trickle",
+ *     "session_id": ...,
+ *     "sender": <handle_id>,
+ *     "candidate": {
+ *       "candidate": "candidate:...",
+ *       "sdpMid": "0",
+ *       "sdpMLineIndex": 0
+ *     }
+ *   }
+ *
+ * → remote_candidate 信号
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 7. 订阅远端发布者（Subscribe → attach_subscriber → join → StartSubscriber）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 7a. attach（同第 3 节，每个 feed 一个 handle）
+ *
+ * 7b. 以订阅者身份 join：
+ *   客户端 → 服务端：
+ *     {
+ *       "janus": "message",
+ *       "session_id": <session_id_>,
+ *       "handle_id": <subscriber_handle>,
+ *       "transaction": "tx-7",
+ *       "body": {
+ *         "request": "join",
+ *         "ptype": "subscriber",
+ *         "room": <room_id>,
+ *         "feed": <远端 feed_id>,
+ *         "pin": "<可选>"
+ *       }
+ *     }
+ *
+ *   服务端 → 客户端（janus: event，含 offer）：
+ *     {
+ *       "janus": "event",
+ *       "sender": <subscriber_handle>,
+ *       "plugindata": {
+ *         "plugin": "janus.plugin.videoroom",
+ *         "data": { "videoroom": "attached" }
+ *       },
+ *       "jsep": { "type": "offer", "sdp": "<远端 SDP>" }
+ *     }
+ *
+ *   jsep.type=="offer" → subscriber_offer 信号
+ *
+ * 7c. 发送 Answer 开始拉流（StartSubscriber）：
+ *   客户端 → 服务端：
+ *     {
+ *       "janus": "message",
+ *       "session_id": <session_id_>,
+ *       "handle_id": <subscriber_handle>,
+ *       "transaction": "tx-8",
+ *       "body": { "request": "start", "room": <room_id> },
+ *       "jsep": { "type": "answer", "sdp": "<本地 SDP>" }
+ *     }
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 8. 房间动态事件（handle_event, videoroom=="event"）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 有人新进房并开始推流（publishers 列表更新）：
+ *   { "videoroom": "event", "publishers": [ { "id": ..., "display": "..." } ] }
+ *   → publishers 信号
+ *
+ * 有人停止推流：
+ *   { "videoroom": "event", "unpublished": <feed_id> }
+ *   → publisher_left 信号
+ *
+ * 有人离开房间：
+ *   { "videoroom": "event", "leaving": <feed_id> }
+ *   → publisher_left 信号
+ *
+ * 插件错误：
+ *   { "videoroom": "event", "error_code": 426, "error": "No such room" }
+ *   → error 信号
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 9. 心跳保活（start_keepalive，间隔 25s）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 客户端 → 服务端：
+ *   {
+ *     "janus": "keepalive",
+ *     "session_id": <session_id_>,
+ *     "transaction": "tx-N"
+ *   }
+ *
+ * 服务端 → 客户端（janus: ack，当前未处理，可忽略）：
+ *   { "janus": "ack", "session_id": ..., "transaction": "tx-N" }
+ *
+ * keepalive 的 transaction 不写入 tx_ops_，无需等待响应。
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 10. 断开连接（Disconnect）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 客户端 → 服务端（先 unpublish，再 destroy）：
+ *   {
+ *     "janus": "message",
+ *     "session_id": <session_id_>,
+ *     "handle_id": <pub_handle_>,
+ *     "transaction": "tx-9",
+ *     "body": { "request": "unpublish" }
+ *   }
+ *   { "janus": "destroy", "session_id": <session_id_>, "transaction": "tx-10" }
+ *
+ * 随后关闭 WebSocket → on_ws_disconnected() → destroyed 信号
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 11. 网关级错误响应
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ *   { "janus": "error", "transaction": "tx-X",
+ *     "error": { "code": 458, "reason": "..." } }
+ *   { "janus": "timeout", "transaction": "tx-X", ... }
+ *   { "janus": "hangup", "session_id": ..., "reason": "..." }
+ *
+ * → error 信号
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 关键 ID 说明
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ *   session_id_  : create 返回，标识与 Janus 的会话
+ *   pub_handle_  : attach videoroom 返回，发布者插件句柄
+ *   feed_id      : join 后 Janus 分配的房间内发布者 id（订阅时用）
+ *   handle_id    : 每个 attach 返回的插件句柄（发布/订阅各一个）
+ */
 
 
 
@@ -142,8 +423,10 @@ private:
 	///error信号发出之后调用
     utils::slots_t<> on_ws_error(const std::string& err);
 	///处理janus服务端返回的success响应,处理创建会话、附加发布者插件、加入房间等成功响应
+    /// 响应数据类型: 创建janus会话,请求插件,进入房间请求,获得远端请求
     void handle_success(const json& msg);
-	///处理janus服务端返回的event响应,加入房间成功服务端返回event响应,客户端处理event响应
+	///处理janus服务端返回的event响应
+    /// 响应数据类型: 加入房间,房间情况变换
     void handle_event(const json& msg);
 	///处理janus服务端返回的trickle响应,处理发送ICE数据包
     void handle_trickle(const json& msg);

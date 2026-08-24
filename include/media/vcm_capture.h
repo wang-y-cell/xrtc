@@ -28,7 +28,7 @@ public:
     ~VcmCapture() override;
 
     /**
-     * @brief 开始视频采集
+     * @brief 开始视频采集,会打开设置id的设备(摄像头),并将每一帧传入onframe中
      * @return 是否成功
     */
     bool start() override;

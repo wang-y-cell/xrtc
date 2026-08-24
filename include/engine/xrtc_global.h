@@ -46,6 +46,7 @@ public:
     void set_observer(XRtcEngineObserver* observer) { observer_ = observer; }
 
     /// 懒创建 PeerConnectionFactory（必须在 api_thread 上调用）
+    ///WebRTC 全局工厂，用来创建 AudioTrack、VideoTrack 等。
     webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface>
     GetOrCreatePeerConnectionFactory();
 

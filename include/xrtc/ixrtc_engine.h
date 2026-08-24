@@ -32,7 +32,7 @@ public:
     virtual void video_source_stop_event(IXRtcMediaSource* video_source,
                                          XRtcError error) {}
 
-    // 本地采集线程回调；实现侧应尽快返回，并自行切到 UI 线程渲染
+    // qt界面渲染,在onframe函数中调用,将获得视频帧转换成rgba回调这个函数
     virtual void on_video_frame(IXRtcMediaSource* video_source,
                                 const XRTCVideoFrame& frame) {}
 

@@ -48,19 +48,27 @@ public:
 private:
     void notifyJoinResult(XRtcError error, const std::string& message);
     void bindJanusSignals();
+    //本地客户端进入janus房间之后调用
     slots_t<> onJoinedAsPublisher();
     slots_t<> onPublishers(const std::vector<JanusPublisherInfo>& pubs);
     slots_t<> onPublisherLeft(uint64_t feed_id, const std::string& display);
+    //收到janus的sdp offer,设置本地sdp描述
     slots_t<> onPublisherAnswer(const JanusJsep& jsep);
+    //设置本地sdp描述,并发送给janus
     slots_t<> onSubscriberOffer(uint64_t feed_id, uint64_t handle_id,
                                 const JanusJsep& offer);
     slots_t<> onRemoteCandidate(uint64_t handle_id, const std::string& mid,
                                 int idx, const std::string& cand);
     slots_t<> onJanusError(const std::string& err);
     slots_t<> onJanusDestroyed();
+    ///在 Janus 进房成功后，把本地音视频采集和 WebRTC 轨道准备好，供后面的 createPublisherPc() 做 AddTrack 和 CreateOffer 推流
+    ///开启摄像头采集画面
     XRtcStatus ensureLocalMedia();
+    ///设置回调函数,创建peerconnection后并将视频轨道和音频轨道加入进去
     void createPublisherPc();
+    ///通过远端的信息之后发送janus请求订阅对方
     void subscribeFeed(const JanusPublisherInfo& info);
+    ///设置本地sdp描述,同时将sdp发送给janus
     void onPublisherLocalSdp(const std::string& type, const std::string& sdp);
     void onSubscriberLocalSdp(uint64_t handle_id, const std::string& type,
                               const std::string& sdp);
@@ -79,7 +87,9 @@ private:
 
     VcmCapture* capture_ = nullptr;
     webrtc::scoped_refptr<XrtcVideoTrackSource> video_source_;
+    ///音频轨道
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track_;
+    ///视频轨道
     webrtc::scoped_refptr<webrtc::VideoTrackInterface> video_track_;
 
     std::unique_ptr<PeerConnectionHandler> publisher_pc_;

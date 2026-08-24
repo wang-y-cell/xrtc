@@ -141,6 +141,7 @@ bool VcmCapture::init(size_t width, size_t height, int fps,
 }
 
 void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
+    //如果有track_source,将视频帧推入他
     if (track_source_) {
         track_source_->PushFrame(frame);
     }

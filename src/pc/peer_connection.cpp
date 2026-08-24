@@ -36,16 +36,21 @@ public:
         bool /*is_offer*/)
         : pc_(std::move(pc)), callbacks_(std::move(callbacks)) {}
 
+    ///CreateOffer / CreateAnswer 异步完成后的回调：WebRTC 已经生成好本地 SDP，
+    ///这里把它取出来，并立刻设为 PeerConnection 的本地描述
     void OnSuccess(webrtc::SessionDescriptionInterface* desc) override {
         std::string sdp;
-        desc->ToString(&sdp);
+        desc->ToString(&sdp); //将sdp对象转换成字符串
+        //得到类型offer或者answer
         const std::string type = webrtc::SdpTypeToString(desc->GetType());
+        //告诉pc,这份sdp是我本地的描述
         pc_->SetLocalDescription(
             webrtc::make_ref_counted<LocalSetObserver>(callbacks_, type, sdp)
                 .get(),
             desc);
     }
 
+    ///错误回调
     void OnFailure(webrtc::RTCError error) override {
         RTC_LOG(LS_ERROR) << "CreateSessionDescription failed: "
                           << error.message();
@@ -64,12 +69,15 @@ private:
               type_(std::move(type)),
               sdp_(std::move(sdp)) {}
 
+        ///SetLocalDescription 异步完成后的回调：
+        ///WebRTC 已经将本地 SDP 设置到 PeerConnection 中，
         void OnSuccess() override {
             if (callbacks_.on_local_description) {
                 callbacks_.on_local_description(type_, sdp_);
             }
         }
 
+        ///错误回调
         void OnFailure(webrtc::RTCError error) override {
             RTC_LOG(LS_ERROR) << "SetLocalDescription failed: "
                               << error.message();
@@ -98,6 +106,8 @@ public:
                       PeerConnectionHandler::Callbacks callbacks)
         : handler_(handler), callbacks_(std::move(callbacks)) {}
 
+    ///SetRemoteDescription 异步完成后的回调：
+    ///WebRTC 已经将远端 SDP 设置到 PeerConnection 中，
     void OnSetRemoteDescriptionComplete(webrtc::RTCError error) override {
         if (!error.ok()) {
             RTC_LOG(LS_ERROR) << "SetRemoteDescription failed: "
@@ -174,10 +184,11 @@ bool PeerConnectionHandler::Init
 }
 
 void PeerConnectionHandler::Close() {
+    //清空待添加的ice
     pending_remote_candidates_.clear();
     remote_description_set_ = false;
     if (pc_) {
-        pc_->Close();
+        pc_->Close(); //关闭peerconnection
         pc_ = nullptr;
     }
 }
@@ -202,6 +213,7 @@ void PeerConnectionHandler::CreateOffer() {
     if (!pc_) {
         return;
     }
+    //异步调用,此函数会异步设置本地sdp描述并异步发送给janus
     pc_->CreateOffer(
         webrtc::make_ref_counted<CreateSdpObserver>(pc_, callbacks_, true)
             .get(),
@@ -220,23 +232,30 @@ void PeerConnectionHandler::CreateAnswer() {
 
 void PeerConnectionHandler::SetRemoteDescription(const std::string& type,
                                                  const std::string& sdp) {
+    //如果peerconnection为空,则返回
     if (!pc_) {
         return;
     }
+    //将sdp类型转换成webrtc的sdp类型
     auto sdp_type = webrtc::SdpTypeFromString(type);
+    //如果转换失败,则返回
     if (!sdp_type) {
+        //如果转换失败,则返回
         if (callbacks_.on_error) {
             callbacks_.on_error("Unknown SDP type: " + type);
         }
         return;
     }
+    //创建sdp描述对象
     auto desc = webrtc::CreateSessionDescription(*sdp_type, sdp);
     if (!desc) {
+        //如果创建失败,则返回
         if (callbacks_.on_error) {
             callbacks_.on_error("Failed to parse remote SDP");
         }
         return;
     }
+    //将sdp描述对象设置到peerconnection中
     pc_->SetRemoteDescription(
         std::move(desc),
         webrtc::make_ref_counted<RemoteSetObserver>(this, callbacks_));

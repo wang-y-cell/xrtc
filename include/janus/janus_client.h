@@ -29,6 +29,7 @@
  *   WebSocket 握手
  *     → create（创建 Session）
  *     → attach（挂载 janus.plugin.videoroom，获得 pub_handle_）
+ *     → [可选] message/create（create_room_if_missing：房间不存在则建房）
  *     → message/join（以 publisher 身份进房）
  *     → [本地创建 Offer]
  *     → message/configure + jsep（Publish 推流）
@@ -103,8 +104,49 @@
  *     "data": { "id": 12345678 }            // → pub_handle_ 或 subscriber handle
  *   }
  *
- * 发布者 attach 成功后 → join_as_publisher()
+ * 发布者 attach 成功后：
+ *   create_room_if_missing → create_room() → success(created|427) → join_as_publisher()
+ *   否则直接 → join_as_publisher()
  * 订阅者 attach 成功后 → message/join（ptype=subscriber）
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * 3b. 动态创建 VideoRoom（create_room，可选）
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 仅当 XRTCJoinConfig::create_room_if_missing 为 true 时，在 join 前发送：
+ *
+ * 客户端 → 服务端：
+ *   {
+ *     "janus": "message",
+ *     "session_id": <session_id_>,
+ *     "handle_id": <pub_handle_>,
+ *     "transaction": "tx-create-room",
+ *     "body": {
+ *       "request": "create",
+ *       "room": <room_id>,
+ *       "description": "<可选>",
+ *       "publishers": <max_publishers>,
+ *       "audiocodec": "opus",
+ *       "videocodec": "vp8",
+ *       "pin": "<可选>",
+ *       "admin_key": "<可选，服务端要求时>"
+ *     }
+ *   }
+ *
+ * 服务端 → 客户端（create 为同步请求，走 janus: success + plugindata）：
+ *   成功：
+ *     {
+ *       "janus": "success", "transaction": "...", "sender": <pub_handle>,
+ *       "plugindata": { "data": { "videoroom": "created", "room": <id> } }
+ *     }
+ *   房间已存在：
+ *     {
+ *       "janus": "success", ...,
+ *       "plugindata": { "data": { "videoroom": "event", "error_code": 427, ... } }
+ *     }
+ *     → 视为可继续 join
+ *
+ * 前提：Janus VideoRoom 需允许客户端 create；若配置了 admin_key 须在 join config 填写。
  *
  * ═══════════════════════════════════════════════════════════════════════
  * 4. 以发布者身份进房（join_as_publisher）
@@ -404,6 +446,7 @@ private:
         kNone,
         kCreate,
         kAttachPub,
+        kCreateRoom,
         kJoinPub,
         kAttachSub,
     };
@@ -434,6 +477,10 @@ private:
     void create_session();
 	///给janus服务器发送attach请求,附加发布者插件,拿到发布者用的 plugin handle
     void attach_publisher();
+	/// 可选：VideoRoom create，房间不存在时建房；完成后调用 join_as_publisher
+    void create_room();
+	/// 处理 create 房间的插件结果（success/plugindata 或 event）
+    void handle_create_room_result(const json& data);
 	///以发布者身份进房,发送join请求,janus服务端返回event响应
     void join_as_publisher();
 	///附加订阅者插件,拿到订阅者用的 plugin handle,
@@ -458,6 +505,8 @@ private:
     ///发布者句柄,发送attach 使用videoroom插件之后,janus发送响应中包含的id,将这个id赋值给这个句柄
 	///这是本地的发布者句柄,表示一个连接
     uint64_t pub_handle_ = 0;
+    /// 正在等待 create 房间的 event（created 或 427）
+    bool create_room_pending_ = false;
     ///生成随机的transaction字段的值的序号,
     ///用来保持会话的连接信息的transaction字段的值
     std::atomic<int> tx_seq_{0};

@@ -219,6 +219,10 @@ void Widget::join_meeting() {
     config.room_id = ui->room_id->text().trimmed().toULongLong();
     config.display_name =
         ui->display_name->text().trimmed().toUtf8().constData();
+    config.create_room_if_missing = ui->create_room_if_missing->isChecked();
+    config.room_description = config.display_name.empty()
+                                  ? ("room-" + std::to_string(config.room_id))
+                                  : (config.display_name + "'s room");
     const int index = ui->camera_list->currentIndex();
     if (index >= 0 && index < static_cast<int>(video_devices_.size())) {
         config.video_device_id = video_devices_[index].device_id;
@@ -232,9 +236,9 @@ void Widget::join_meeting() {
     config.ice_servers.push_back(
         {"turn:8.153.155.18:3478?transport=tcp", "wang_y", "wang_y"});
 
-    spdlog::info("[ui] join_meeting url={} room={} name={} ice={}",
+    spdlog::info("[ui] join_meeting url={} room={} name={} create_if_missing={} ice={}",
                  config.janus_ws_url, config.room_id, config.display_name,
-                 config.ice_servers.size());
+                 config.create_room_if_missing, config.ice_servers.size());
 
     ui->status_label->setText(QString::fromUtf8("状态: joining..."));
     ui->btn_join->setEnabled(false);

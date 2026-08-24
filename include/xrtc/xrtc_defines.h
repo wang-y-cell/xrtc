@@ -32,10 +32,14 @@ struct XRTCIceServer {
 ///加入房间的配置,包括Janus WebSocket URL、房间ID、显示名、房间PIN、视频设备ID、音频设备ID、视频宽度、视频高度、视频帧率、ICE服务器信息
 struct XRTCJoinConfig {
     std::string janus_ws_url;   /// 例如 ws://host:8188/ 或 wss://host/janus
-    // (这个room_id可以是服务端预先配置好的,也可以创建新的,但是目前的代码还没有实现)
-    uint64_t room_id = 1234;    /// 已存在的 VideoRoom id
+    uint64_t room_id = 1234;    /// VideoRoom id（可预存，也可配合 create_room_if_missing 动态创建）
     std::string display_name;   /// 显示名,这个显示名是用户自己填写的,用于显示在房间里
     std::string pin;            /// 房间 pin（可选）
+    /// 若为 true：attach 后先 create，房间已存在（427）则仍继续 join
+    bool create_room_if_missing = false;
+    std::string room_description;  /// create 时的房间描述（可选）
+    uint32_t max_publishers = 6;   /// create 时最大发布者数
+    std::string admin_key;         /// Janus VideoRoom admin_key（服务端要求时填写）
     std::string video_device_id; /// 为空则用第一个摄像头
     std::string audio_device_id; /// 预留；当前用默认录音设备
     int width = 640;

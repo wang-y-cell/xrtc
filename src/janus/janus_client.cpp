@@ -36,6 +36,7 @@ XRtcStatus JanusClient::Connect(const XRTCJoinConfig& config) {
     config_ = config;
     session_id_ = 0; //初始化会话id为0
     pub_handle_ = 0; //初始化发布者句柄为0
+    create_room_pending_ = false;
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
         feed_to_handle_.clear();
@@ -74,6 +75,7 @@ void JanusClient::Disconnect() {
     transport_->close();
     session_id_ = 0;
     pub_handle_ = 0;
+    create_room_pending_ = false;
 }
 
 void JanusClient::send_json(const json& obj) {
@@ -161,6 +163,66 @@ void JanusClient::attach_publisher() {
                {"plugin", "janus.plugin.videoroom"},
                {"session_id", session_id_},
                {"transaction", tx}});
+}
+
+void JanusClient::create_room() {
+    create_room_pending_ = true;
+    const std::string tx = new_transaction();
+    {
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        tx_ops_[tx] = PendingOp::kCreateRoom;
+    }
+    json body = {{"request", "create"},
+                 {"room", config_.room_id},
+                 {"publishers", config_.max_publishers},
+                 {"audiocodec", "opus"},
+                 {"videocodec", "vp8"}};
+    if (!config_.room_description.empty()) {
+        body["description"] = config_.room_description;
+    }
+    if (!config_.pin.empty()) {
+        body["pin"] = config_.pin;
+    }
+    if (!config_.admin_key.empty()) {
+        body["admin_key"] = config_.admin_key;
+    }
+    spdlog::info("[janus] create room {} (if missing)", config_.room_id);
+    send_json({{"janus", "message"},
+               {"session_id", session_id_},
+               {"handle_id", pub_handle_},
+               {"transaction", tx},
+               {"body", body}});
+}
+
+void JanusClient::handle_create_room_result(const json& data) {
+    if (!create_room_pending_) {
+        return;
+    }
+    create_room_pending_ = false;
+
+    const std::string videoroom = data.value("videoroom", "");
+    const int error_code = data.value("error_code", 0);
+
+    if (videoroom == "created") {
+        spdlog::info("[janus] room {} created, joining as publisher",
+                     config_.room_id);
+        join_as_publisher();
+        return;
+    }
+    // 427 Room already exists → 仍可 join
+    if (error_code == 427) {
+        spdlog::info("[janus] room {} already exists, joining as publisher",
+                     config_.room_id);
+        join_as_publisher();
+        return;
+    }
+    if (data.contains("error") || data.contains("error_code")) {
+        error.emit(data.value("error", "videoroom create failed"));
+        return;
+    }
+    // 未知成功形态：仍尝试 join，避免卡在 joining
+    spdlog::warn("[janus] unexpected create room response: {}", data.dump());
+    join_as_publisher();
 }
 
 void JanusClient::join_as_publisher() {
@@ -322,11 +384,16 @@ void JanusClient::handle_success(const json& msg) {
         return;
     }
 
-    //如果之前请求的是附加发布者插件，则设置pub_handle_的值，并调用join_as_publisher
+    //如果之前请求的是附加发布者插件，则设置pub_handle_的值
+    // create_room_if_missing 时先建房，否则直接以 publisher 进房
     if (op == PendingOp::kAttachPub) {
         pub_handle_ = data.value("id", static_cast<uint64_t>(0));
         spdlog::info("Janus publisher handle {}", pub_handle_);
-        join_as_publisher();
+        if (config_.create_room_if_missing) {
+            create_room();
+        } else {
+            join_as_publisher();
+        }
         return;
     }
 
@@ -355,6 +422,14 @@ void JanusClient::handle_success(const json& msg) {
                    {"handle_id", handle},
                    {"transaction", new_transaction()},
                    {"body", body}});
+        return;
+    }
+
+    // VideoRoom create 是同步请求：响应为 janus:success + plugindata
+    if (op == PendingOp::kCreateRoom) {
+        const json plugindata = msg.value("plugindata", json::object());
+        const json pdata = plugindata.value("data", json::object());
+        handle_create_room_result(pdata);
     }
 }
 
@@ -406,6 +481,11 @@ void JanusClient::handle_event(const json& msg) {
             //将发布者信息发送给call_session
             publishers.emit(pubs); //这里连接的是call_session的槽函数,逐个订阅房间中存在的发布者,也就是发送attach,需要获得janus的success信息
         }
+    } else if (videoroom == "created") {
+        // 少数部署可能仍以 event 返回 create 结果
+        if (create_room_pending_ && handle_id == pub_handle_) {
+            handle_create_room_result(data);
+        }
     } else if (videoroom == "event") { //进房之后的房间动态
         //有人开始推流,退出,房间出错,都会进入这里
         auto pubs = collect_publishers(data);
@@ -425,8 +505,12 @@ void JanusClient::handle_event(const json& msg) {
             //发送call_session的publisher_left信号
             publisher_left.emit(feed, "");
         }
-        //如果房间出错,则发送错误信息给call_session
-        if (data.contains("error") || data.contains("error_code")) {
+        // 建房流程中：427 等错误也可能走 event（兼容）
+        if (create_room_pending_ && handle_id == pub_handle_ &&
+            (data.contains("error") || data.contains("error_code"))) {
+            handle_create_room_result(data);
+        } else if (data.contains("error") || data.contains("error_code")) {
+            //如果房间出错,则发送错误信息给call_session
             error.emit(data.value("error", "videoroom error"));
         }
     }

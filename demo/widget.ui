@@ -45,6 +45,16 @@
       </widget>
      </item>
      <item>
+      <widget class="QCheckBox" name="create_room_if_missing">
+       <property name="text">
+        <string>不存在则自动创建房间</string>
+       </property>
+       <property name="checked">
+        <bool>false</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QLabel" name="label_display">
        <property name="text">
         <string>Display Name</string>

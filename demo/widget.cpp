@@ -239,7 +239,6 @@ void Widget::join_meeting() {
     spdlog::info("[ui] join_meeting url={} room={} name={} create_if_missing={} ice={}",
                  config.janus_ws_url, config.room_id, config.display_name,
                  config.create_room_if_missing, config.ice_servers.size());
-
     ui->status_label->setText(QString::fromUtf8("状态: joining..."));
     ui->btn_join->setEnabled(false);
     engine->join(config);

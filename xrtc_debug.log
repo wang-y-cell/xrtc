@@ -1,1 +1,2 @@
-[10:55:42.654] [info] logging ready (console + xrtc_debug.log)
+[13:37:57.492] [info] logging ready (console + xrtc_debug.log)
+[13:37:59.315] [info] [ui] join_meeting url=ws://8.153.155.18:8188/ room=1234 name=user1 create_if_missing=false ice=3

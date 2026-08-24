@@ -64,6 +64,8 @@ slots_t<> CallSession::onPublishers(
 slots_t<> CallSession::onPublisherLeft(uint64_t feed_id,
                                               const std::string&) {
     XRtcGlobal::instance().api_thread()->PostTask([this, feed_id]() {
+        // 先卸 sink，再关 subscriber PC，避免帧回调写已释放内存
+        detachRemoteMedia(feed_id);
         for (auto it = handle_to_feed_.begin(); it != handle_to_feed_.end();) {
             if (it->second == feed_id) {
                 subscriber_pcs_.erase(it->first);
@@ -72,7 +74,6 @@ slots_t<> CallSession::onPublisherLeft(uint64_t feed_id,
                 ++it;
             }
         }
-        remote_sinks_.erase(feed_id);
         if (auto* obs = XRtcGlobal::instance().observer()) {
             XRTCRemoteUser user;
             user.feed_id = feed_id;
@@ -206,6 +207,7 @@ void CallSession::Start(const XRTCJoinConfig& config) {
 }
 
 void CallSession::Stop() {
+    const bool was_active = active_;
     active_ = false;
 
     if (janus_) {
@@ -213,10 +215,13 @@ void CallSession::Stop() {
     }
 
     auto cleanup = [this]() {
+        // 1) 先从 VideoTrack 卸掉 sink，杜绝退房/退出时的堆损坏
+        detachAllRemoteMedia();
+        // 2) 再关 PC（Close 内会清空回调）
         publisher_pc_.reset();
         subscriber_pcs_.clear();
         handle_to_feed_.clear();
-        remote_sinks_.clear();
+        // 3) 本地采集与轨
         audio_track_ = nullptr;
         video_track_ = nullptr;
         video_source_ = nullptr;
@@ -233,8 +238,10 @@ void CallSession::Stop() {
         XRtcGlobal::instance().api_thread()->BlockingCall(cleanup);
     }
 
-    if (auto* obs = XRtcGlobal::instance().observer()) {
-        obs->on_leave(XRtcError::kNOERROR);
+    if (was_active) {
+        if (auto* obs = XRtcGlobal::instance().observer()) {
+            obs->on_leave(XRtcError::kNOERROR);
+        }
     }
 }
 
@@ -392,24 +399,66 @@ void CallSession::subscribeFeed(const JanusPublisherInfo& info) {
     janus_->Subscribe(info.feed_id);
 }
 
+void CallSession::detachRemoteVideo(uint64_t feed_id) {
+    auto vit = remote_videos_.find(feed_id);
+    if (vit != remote_videos_.end()) {
+        vit->second.Detach();
+        remote_videos_.erase(vit);
+    }
+}
+
+void CallSession::detachRemoteMedia(uint64_t feed_id) {
+    detachRemoteVideo(feed_id);
+    remote_audio_tracks_.erase(feed_id);
+}
+
+void CallSession::detachAllRemoteMedia() {
+    for (auto& [id, att] : remote_videos_) {
+        (void)id;
+        att.Detach();
+    }
+    remote_videos_.clear();
+    remote_audio_tracks_.clear();
+}
+
 void CallSession::attachRemoteTrack(
     uint64_t feed_id,
     webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track) {
     if (!track) {
         return;
     }
+
+    // 远端音频：启用并持有轨即可。扬声器由 WebRTC AudioState 在 worker
+    // 线程上 InitPlayout/StartPlayout，切勿在 api_thread 上手动调 ADM。
+    if (track->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
+        auto audio =
+            webrtc::scoped_refptr<webrtc::AudioTrackInterface>(
+                static_cast<webrtc::AudioTrackInterface*>(track.get()));
+        audio->set_enabled(true);
+        remote_audio_tracks_[feed_id] = std::move(audio);
+        spdlog::info("[session] remote audio attached, feed={}", feed_id);
+        return;
+    }
+
     if (track->kind() != webrtc::MediaStreamTrackInterface::kVideoKind) {
         return;
     }
-    auto* video = static_cast<webrtc::VideoTrackInterface*>(track.get());
-    auto sink = std::make_unique<RemoteVideoSink>(
+
+    auto video = webrtc::scoped_refptr<webrtc::VideoTrackInterface>(
+        static_cast<webrtc::VideoTrackInterface*>(track.get()));
+    // 同一 feed 重复绑视频时先卸旧 sink；不要动 audio 引用
+    detachRemoteVideo(feed_id);
+
+    RemoteVideoAttachment att;
+    att.track = video;
+    att.sink = std::make_unique<RemoteVideoSink>(
         feed_id, [](uint64_t id, const XRTCVideoFrame& frame) {
             if (auto* obs = XRtcGlobal::instance().observer()) {
                 obs->on_remote_video_frame(id, frame);
             }
         });
-    video->AddOrUpdateSink(sink.get(), webrtc::VideoSinkWants());
-    remote_sinks_[feed_id] = std::move(sink);
+    video->AddOrUpdateSink(att.sink.get(), webrtc::VideoSinkWants());
+    remote_videos_[feed_id] = std::move(att);
 }
 
 }  // namespace xrtc

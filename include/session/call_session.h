@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "api/scoped_refptr.h"
+#include "api/media_stream_interface.h"
 #include "concurrency/signal_and_slots/signal_and_slots.h"
 #include <janus/janus_client.h>
 #include <media/remote_video_sink.h>
@@ -75,6 +76,9 @@ private:
     void attachRemoteTrack(
         uint64_t feed_id,
         webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track);
+    void detachRemoteVideo(uint64_t feed_id);
+    void detachRemoteMedia(uint64_t feed_id);
+    void detachAllRemoteMedia();
 
     XRTCJoinConfig config_;
     bool active_ = false;
@@ -96,7 +100,11 @@ private:
     std::unordered_map<uint64_t, std::unique_ptr<PeerConnectionHandler>>
         subscriber_pcs_;
     std::unordered_map<uint64_t, uint64_t> handle_to_feed_;
-    std::unordered_map<uint64_t, std::unique_ptr<RemoteVideoSink>> remote_sinks_;
+    std::unordered_map<uint64_t, RemoteVideoAttachment> remote_videos_;
+    /// 持有远端音频轨，保证其存活并由 ADM 混音播放
+    std::unordered_map<uint64_t,
+                       webrtc::scoped_refptr<webrtc::AudioTrackInterface>>
+        remote_audio_tracks_;
 };
 
 }  // namespace xrtc

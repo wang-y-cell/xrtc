@@ -184,11 +184,12 @@ bool PeerConnectionHandler::Init
 }
 
 void PeerConnectionHandler::Close() {
-    //清空待添加的ice
+    // 先清回调，避免 Close 过程中 OnTrack/ICE 再进业务逻辑
+    callbacks_ = {};
     pending_remote_candidates_.clear();
     remote_description_set_ = false;
     if (pc_) {
-        pc_->Close(); //关闭peerconnection
+        pc_->Close();
         pc_ = nullptr;
     }
 }

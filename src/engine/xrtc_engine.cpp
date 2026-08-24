@@ -6,6 +6,7 @@
 #include <session/call_session.h>
 #include "modules/video_capture/video_capture_factory.h"
 #include <engine/xrtc_global.h>
+#include <xrtc/xrtc_log.h>
 
 namespace xrtc {
 
@@ -142,6 +143,8 @@ void XRtcEngine::join(const XRTCJoinConfig& config) {
         cfg.display_name = "xrtc-user";
     }
 
+    spdlog::info("[engine] join post Start url={} room={} cam={}",
+                 cfg.janus_ws_url, cfg.room_id, cfg.video_device_id);
     //异步调用Start()
     XRtcGlobal::instance().api_thread()->PostTask([this, cfg]() {
         if (!call_session_) {

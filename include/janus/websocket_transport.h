@@ -4,7 +4,8 @@
 #include <string>
 
 #include "concurrency/signal_and_slots/signal_and_slots.h"
-#include <xrtc/xrtc_result.h>
+#include <xrtc/xrtc_defines.h>
+#include <internal/xrtc_result.h>
 
 namespace xrtc {
 

@@ -1,12 +1,13 @@
-#include <engine/xrtc_engine.h>
+﻿#include <engine/xrtc_engine.h>
 
 #include "api/audio/create_audio_device_module.h"
 #include "api/environment/environment_factory.h"
+#include "modules/video_capture/video_capture_factory.h"
+#include "rtc_base/thread.h"
+#include <engine/xrtc_global.h>
 #include <media/vcm_capture.h>
 #include <session/call_session.h>
-#include "modules/video_capture/video_capture_factory.h"
-#include <engine/xrtc_global.h>
-#include <xrtc/xrtc_log.h>
+#include <spdlog/spdlog.h>
 
 namespace xrtc {
 

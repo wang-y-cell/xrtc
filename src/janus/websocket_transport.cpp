@@ -1,4 +1,4 @@
-#include <janus/websocket_transport.h>
+﻿#include <janus/websocket_transport.h>
 
 #include <atomic>
 #include <chrono>
@@ -14,7 +14,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 
-#include <xrtc/xrtc_log.h>
+#include <spdlog/spdlog.h>
 
 namespace xrtc {
 namespace {

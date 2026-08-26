@@ -1,8 +1,8 @@
-#include <session/call_session.h>
+﻿#include <session/call_session.h>
 
 #include "api/audio_options.h"
 #include <engine/xrtc_global.h>
-#include <xrtc/xrtc_log.h>
+#include <spdlog/spdlog.h>
 
 namespace xrtc {
 

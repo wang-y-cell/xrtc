@@ -1,4 +1,4 @@
-#include <media/vcm_capture.h>
+﻿#include <media/vcm_capture.h>
 
 #include <modules/video_capture/video_capture_factory.h>
 #include <rtc_base/logging.h>
@@ -7,7 +7,7 @@
 #include <engine/xrtc_global.h>
 #include <xrtc/ixrtc_engine.h>
 #include "libyuv/convert_argb.h"
-#include <xrtc/xrtc_log.h>
+#include <spdlog/spdlog.h>
 
 namespace xrtc {
 

@@ -14,7 +14,7 @@
 #include "concurrency/signal_and_slots/signal_and_slots.h"
 #include <janus/websocket_transport.h>
 #include <xrtc/xrtc_defines.h>
-#include <xrtc/xrtc_result.h>
+#include <internal/xrtc_result.h>
 
 
 /*

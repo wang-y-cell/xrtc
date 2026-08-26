@@ -1,4 +1,4 @@
-#include "widget.h"
+﻿#include "widget.h"
 #include "ui_widget.h"
 
 #include <QMessageBox>
@@ -7,7 +7,7 @@
 #include <QResizeEvent>
 #include <QString>
 
-#include <xrtc/xrtc_log.h>
+#include <spdlog/spdlog.h>
 
 namespace {
 // 按钮样式：停止时红色、启动时蓝色

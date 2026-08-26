@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""构建 / 编译 / 运行 webrtc_test（Qt6 + CMake）。"""
+"""构建 / 编译 / 运行 webrtc_test（MSVC 2022 + Ninja + CMake）。"""
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,72 +13,68 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 TARGET_NAME = 'webrtc_test'
+SDK_TARGET = 'xrtc'
+GENERATOR = 'Ninja'
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='构建和编译项目，添加编译和构建选项'
+        description='构建 xrtc SDK 或 Qt Demo（固定 MSVC 2022 + Ninja）'
+    )
+    parser.add_argument(
+        '--demo',
+        action='store_true',
+        help='构建 Qt Demo（webrtc_test.exe）',
+    )
+    parser.add_argument(
+        '--qt_lib',
+        type=str,
+        default=None,
+        help='Qt6 安装路径或 lib 目录（--demo 时必填），'
+             '例: F:/Qt/6.8.3/msvc2022_64',
     )
     parser.add_argument(
         '--run', '-r',
         action='store_true',
-        help='构建和编译之后运行程序',
+        help='构建后运行 Demo（需配合 --demo）',
     )
     parser.add_argument(
         '--clean', '-c',
         action='store_true',
-        help='清理构建和编译生成的文件',
-    )
-    parser.add_argument(
-        '--qt', '-q',
-        type=str,
-        default=os.environ.get('QT6_MSVC_LIB'),
-        help='Qt6 安装路径或 lib 目录（默认读取环境变量 QT6_MSVC_LIB）',
-    )
-    parser.add_argument(
-        '--generate', '-G',
-        action='store_true',
-        help='强制重新生成构建文件（cmake configure）',
+        help='清理构建目录；单独使用则只清理，与 --demo 联用则清理后重编',
     )
     parser.add_argument(
         '--job', '-j',
         type=int,
         default=os.cpu_count() or 1,
-        help='构建和编译时使用的线程数',
+        help='并行编译线程数',
     )
     parser.add_argument(
         '--config',
         default='debug',
         choices=['debug', 'release'],
-        help='构建和编译时使用的配置',
-    )
-    parser.add_argument(
-        '--generator',
-        default='Ninja',
-        help='CMake 生成器（默认 Ninja）',
+        help='构建配置（默认 debug；会链接 webrtc/lib_debug 或 lib_release）',
     )
     return parser.parse_args()
 
 
 def resolve_qt_prefix(qt: str | None) -> Path | None:
-    """将 Qt 路径规范为 CMAKE_PREFIX_PATH（若指向 lib 则上一级）。"""
+    """将 Qt 路径规范为安装前缀（若指向 lib 则上一级）。"""
     if not qt:
         return None
     path = Path(qt).expanduser().resolve()
-    if path.name.lower() == 'lib': # 若指向 lib 则上一级
+    if path.name.lower() == 'lib':
         path = path.parent
-    if not path.is_dir(): # 若路径不存在则抛出异常
+    if not path.is_dir():
         raise FileNotFoundError(f'Qt 路径不存在: {path}')
     return path
 
 
 def build_dir_for(config: str) -> Path:
-    """返回构建路径"""
     return ROOT / 'build' / config.capitalize()
 
 
 def env_path(env: dict[str, str]) -> str:
-    """读取 PATH（Windows 下可能是 Path）。"""
     for key in ('PATH', 'Path', 'path'):
         if key in env:
             return env[key]
@@ -113,7 +110,6 @@ def find_vcvarsall() -> Path | None:
 
 
 def load_msvc_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """确保 MSVC 工具链在环境中可用（cl / link 等）。"""
     env = dict(base or os.environ)
     if shutil.which('cl', path=env_path(env)):
         return env
@@ -122,10 +118,9 @@ def load_msvc_env(base: dict[str, str] | None = None) -> dict[str, str]:
     if vcvars is None:
         raise RuntimeError(
             '未找到 MSVC 环境（cl.exe / vcvarsall.bat）。'
-            '请在“x64 Native Tools Command Prompt”中运行，或安装 VS C++ 工作负载。'
+            '请安装 VS 2022 C++ 工作负载，或在 x64 Native Tools 中运行。'
         )
 
-    # call vcvarsall 后导出环境；/u 使输出为 UTF-16LE，避免中文环境乱码
     cmd = f'cmd /u /c "call \"{vcvars}\" x64 >nul && set"'
     result = subprocess.run(cmd, capture_output=True, check=False)
     if result.returncode != 0:
@@ -138,7 +133,6 @@ def load_msvc_env(base: dict[str, str] | None = None) -> dict[str, str]:
             continue
         key, value = line.split('=', 1)
         env[key] = value
-        # Windows 下 Path/PATH 大小写并存时，保证两者一致
         if key.lower() == 'path':
             env['PATH'] = value
             env['Path'] = value
@@ -163,13 +157,33 @@ def cmake_configured(build_dir: Path) -> bool:
     return (build_dir / 'CMakeCache.txt').is_file()
 
 
+def read_cmake_cache(build_dir: Path, key: str) -> str | None:
+    cache = build_dir / 'CMakeCache.txt'
+    if not cache.is_file():
+        return None
+    pattern = re.compile(rf'^{re.escape(key)}:(?:[^\n=]+)=(.*)$')
+    for line in cache.read_text(encoding='utf-8', errors='replace').splitlines():
+        match = pattern.match(line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def resolve_qt_prefix_from_cache(build_dir: Path) -> Path | None:
+    raw = read_cmake_cache(build_dir, 'QT6_ROOT')
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.name.lower() == 'lib':
+        path = path.parent
+    return path if path.is_dir() else None
+
+
 def find_ninja() -> Path | None:
-    """查找可用的 ninja（跳过 depot_tools 等损坏的包装脚本）。"""
     candidates: list[Path] = []
     which = shutil.which('ninja')
     if which:
         candidates.append(Path(which))
-    # 常见独立安装路径
     candidates.extend(
         [
             Path(r'F:\ninja\ninja.exe'),
@@ -184,7 +198,6 @@ def find_ninja() -> Path | None:
         seen.add(key)
         exe = path
         if exe.suffix.lower() == '.bat':
-            # depot_tools 的 ninja.bat 常不可用，尝试同目录 ninja.exe
             sibling = exe.with_suffix('.exe')
             if sibling.is_file():
                 exe = sibling
@@ -205,48 +218,91 @@ def find_ninja() -> Path | None:
     return None
 
 
+def prepare_build_env(env: dict[str, str]) -> dict[str, str]:
+    env = load_msvc_env(env)
+    ninja = find_ninja()
+    if ninja is None:
+        raise RuntimeError('未找到可用的 ninja.exe，请安装 Ninja 并加入 PATH。')
+    path = str(ninja.parent) + os.pathsep + env_path(env)
+    env['PATH'] = path
+    env['Path'] = path
+    return env
+
+
 def configure(
     build_dir: Path,
     *,
     config: str,
+    demo: bool,
     qt_prefix: Path | None,
-    generator: str,
     env: dict[str, str],
 ) -> None:
     build_dir.mkdir(parents=True, exist_ok=True)
+    ninja = find_ninja()
+    if ninja is None:
+        raise RuntimeError('未找到可用的 ninja.exe')
+
     cmd = [
         'cmake',
         '-S', str(ROOT),
         '-B', str(build_dir),
-        '-G', generator,
+        '-G', GENERATOR,
         f'-DCMAKE_BUILD_TYPE={config.capitalize()}',
+        f'-DCMAKE_MAKE_PROGRAM={ninja.as_posix()}',
+        f'-DBUILD_XRTC_DEMO={"ON" if demo else "OFF"}',
     ]
-    if qt_prefix is not None:
-        cmd.append(f'-DCMAKE_PREFIX_PATH={qt_prefix.as_posix()}')
-
-    if generator.lower() == 'ninja':
-        ninja = find_ninja()
-        if ninja is None:
+    if demo:
+        if qt_prefix is None:
             raise RuntimeError(
-                '未找到可用的 ninja。请安装 ninja，或使用 --generator '
-                '"NMake Makefiles" / "Visual Studio 17 2022"。'
+                '--demo 需要 --qt_lib 指定 Qt 路径，'
+                '例: --qt_lib=F:/Qt/6.8.3/msvc2022_64'
             )
-        cmd.append(f'-DCMAKE_MAKE_PROGRAM={ninja.as_posix()}')
-        # 确保构建阶段也能直接调用该 ninja
-        path = str(ninja.parent) + os.pathsep + env_path(env)
-        env['PATH'] = path
-        env['Path'] = path
+        cmd.append(f'-DQT6_ROOT={qt_prefix.as_posix()}')
 
     run_cmd(cmd, env=env)
 
 
-def build(build_dir: Path, *, config: str, job: int, env: dict[str, str]) -> None:
+def sync_cmake_options(
+    build_dir: Path,
+    *,
+    demo: bool,
+    qt_prefix: Path | None,
+    env: dict[str, str],
+) -> None:
+    cmd = [
+        'cmake',
+        '-S', str(ROOT),
+        '-B', str(build_dir),
+        f'-DBUILD_XRTC_DEMO={"ON" if demo else "OFF"}',
+    ]
+    if demo:
+        if qt_prefix is None:
+            cached = resolve_qt_prefix_from_cache(build_dir)
+            if cached is None:
+                raise RuntimeError(
+                    '--demo 需要 --qt_lib 指定 Qt 路径，'
+                    '例: --qt_lib=F:/Qt/6.8.3/msvc2022_64'
+                )
+            qt_prefix = cached
+        cmd.append(f'-DQT6_ROOT={qt_prefix.as_posix()}')
+    run_cmd(cmd, env=env)
+
+
+def build(
+    build_dir: Path,
+    *,
+    config: str,
+    job: int,
+    demo: bool,
+    env: dict[str, str],
+) -> None:
     run_cmd(
         [
             'cmake',
             '--build', str(build_dir),
             '--config', config.capitalize(),
             '--parallel', str(job),
+            '--target', TARGET_NAME if demo else SDK_TARGET,
         ],
         env=env,
     )
@@ -291,62 +347,69 @@ def build_target(
     *,
     config: str,
     job: int,
-    generate: bool,
-    qt: str | None,
+    demo: bool,
+    qt_lib: str | None,
     clean: bool,
     run: bool,
-    generator: str = 'Ninja',
 ) -> None:
-    build_dir = build_dir_for(config)
-    qt_prefix = resolve_qt_prefix(qt)
+    if run and not demo:
+        raise RuntimeError('--run 需要配合 --demo 使用')
 
-    # -c 单独使用：只清理；与 -G / -r 联用：清理后继续配置/构建/运行
+    build_dir = build_dir_for(config)
+    qt_prefix = resolve_qt_prefix(qt_lib)
+
     if clean:
         clean_build(build_dir)
-        if not generate and not run:
-            return
 
-    env = load_msvc_env()
-    if qt_prefix is not None:
-        env['CMAKE_PREFIX_PATH'] = qt_prefix.as_posix()
-        env['Path'] = str(qt_prefix / 'bin') + os.pathsep + env_path(env)
-        env['PATH'] = env['Path']
+    env = prepare_build_env(os.environ.copy())
 
-    if generate or not cmake_configured(build_dir):
-        if qt_prefix is None:
+    if not cmake_configured(build_dir):
+        if demo and qt_prefix is None:
             raise RuntimeError(
-                '未指定 Qt 路径。请设置环境变量 QT6_MSVC_LIB，或使用 --qt / -q 传入。'
+                '--demo 需要 --qt_lib 指定 Qt 路径，'
+                '例: --qt_lib=F:/Qt/6.8.3/msvc2022_64'
             )
         configure(
             build_dir,
             config=config,
+            demo=demo,
             qt_prefix=qt_prefix,
-            generator=generator,
+            env=env,
+        )
+    else:
+        sync_cmake_options(
+            build_dir,
+            demo=demo,
+            qt_prefix=qt_prefix,
             env=env,
         )
 
-    build(build_dir, config=config, job=job, env=env)
+    build(build_dir, config=config, job=job, demo=demo, env=env)
 
     if run:
         exe = find_executable(build_dir, config)
+        if qt_prefix is None:
+            qt_prefix = resolve_qt_prefix_from_cache(build_dir)
         print(f'运行: {exe}')
         run_app(exe, qt_prefix=qt_prefix, env=env)
 
 
 def main() -> int:
     args = parse_args()
-    common = {
-        'config': args.config,
-        'job': args.job,
-        'generate': args.generate,
-        'qt': args.qt,
-        'clean': args.clean,
-        'run': args.run,
-        'generator': args.generator,
-    }
-
     try:
-        build_target(**common)
+        # 仅 -c：只清理，不编译
+        if args.clean and not args.demo and not args.run:
+            clean_build(build_dir_for(args.config))
+            return 0
+
+        build_target(
+            config=args.config,
+            job=args.job,
+            demo=args.demo,
+            qt_lib=args.qt_lib,
+            clean=args.clean,
+            run=args.run,
+        )
     except subprocess.CalledProcessError as e:
         print(f'error: 命令失败 (exit {e.returncode}): {e.cmd}', file=sys.stderr)
         return e.returncode or 1

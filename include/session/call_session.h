@@ -13,7 +13,7 @@
 #include <media/video_track_source.h>
 #include <pc/peer_connection.h>
 #include <xrtc/ixrtc_engine.h>
-#include <xrtc/xrtc_result.h>
+#include <internal/xrtc_result.h>
 
 namespace xrtc {
 

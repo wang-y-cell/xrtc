@@ -2,3 +2,8 @@
 .qtcreator/
 .vscode/
 build/
+
+# WebRTC 预编译 SDK（头文件约 300MB+ + webrtc.lib 约 700MB，用脚本同步）
+webrtc/include/
+webrtc/lib_release/
+webrtc/lib_debug/

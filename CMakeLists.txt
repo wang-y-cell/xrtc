@@ -95,11 +95,17 @@ endif()
 add_subdirectory(utils EXCLUDE_FROM_ALL)
 
 # ---------- Boost (Beast/Asio header-only WebSocket) ----------
-# 本机安装：F:/wy/boost_install（MinGW 编译的 .dll 仅 header-only 组件可与 MSVC 共用）
+# 路径由外部传入：cmake -DBoost_ROOT=... 或 python build.py --boost_path=...
 if(POLICY CMP0144)
     cmake_policy(SET CMP0144 NEW)
 endif()
-set(Boost_ROOT "F:/wy/boost_install" CACHE PATH "Boost install prefix")
+if(NOT Boost_ROOT)
+    message(FATAL_ERROR
+        "必须指定 Boost_ROOT（Boost 安装前缀）。"
+        "示例: cmake -DBoost_ROOT=F:/wy/boost_install "
+        "或: python build.py --boost_path=F:/wy/boost_install")
+endif()
+set(Boost_ROOT "${Boost_ROOT}" CACHE PATH "Boost install prefix")
 set(Boost_NO_SYSTEM_PATHS ON)
 list(APPEND CMAKE_PREFIX_PATH "${Boost_ROOT}")
 find_package(Boost 1.82 REQUIRED CONFIG)

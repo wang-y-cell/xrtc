@@ -34,6 +34,12 @@ def parse_args() -> argparse.Namespace:
              '例: F:/Qt/6.8.3/msvc2022_64',
     )
     parser.add_argument(
+        '--boost_path',
+        type=str,
+        default=None,
+        help='Boost 安装前缀（首次配置必填），例: F:/wy/boost_install',
+    )
+    parser.add_argument(
         '--run', '-r',
         action='store_true',
         help='构建后运行 Demo（需配合 --demo）',
@@ -67,6 +73,16 @@ def resolve_qt_prefix(qt: str | None) -> Path | None:
         path = path.parent
     if not path.is_dir():
         raise FileNotFoundError(f'Qt 路径不存在: {path}')
+    return path
+
+
+def resolve_boost_prefix(boost: str | None) -> Path | None:
+    """校验 Boost 安装前缀路径。"""
+    if not boost:
+        return None
+    path = Path(boost).expanduser().resolve()
+    if not path.is_dir():
+        raise FileNotFoundError(f'Boost 路径不存在: {path}')
     return path
 
 
@@ -179,6 +195,14 @@ def resolve_qt_prefix_from_cache(build_dir: Path) -> Path | None:
     return path if path.is_dir() else None
 
 
+def resolve_boost_prefix_from_cache(build_dir: Path) -> Path | None:
+    raw = read_cmake_cache(build_dir, 'Boost_ROOT')
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_dir() else None
+
+
 def find_ninja() -> Path | None:
     candidates: list[Path] = []
     which = shutil.which('ninja')
@@ -235,6 +259,7 @@ def configure(
     config: str,
     demo: bool,
     qt_prefix: Path | None,
+    boost_prefix: Path,
     env: dict[str, str],
 ) -> None:
     build_dir.mkdir(parents=True, exist_ok=True)
@@ -250,6 +275,7 @@ def configure(
         f'-DCMAKE_BUILD_TYPE={config.capitalize()}',
         f'-DCMAKE_MAKE_PROGRAM={ninja.as_posix()}',
         f'-DBUILD_XRTC_DEMO={"ON" if demo else "OFF"}',
+        f'-DBoost_ROOT={boost_prefix.as_posix()}',
     ]
     if demo:
         if qt_prefix is None:
@@ -267,13 +293,23 @@ def sync_cmake_options(
     *,
     demo: bool,
     qt_prefix: Path | None,
+    boost_prefix: Path | None,
     env: dict[str, str],
 ) -> None:
+    if boost_prefix is None:
+        boost_prefix = resolve_boost_prefix_from_cache(build_dir)
+    if boost_prefix is None:
+        raise RuntimeError(
+            '需要 --boost_path 指定 Boost 路径，'
+            '例: --boost_path=F:/wy/boost_install'
+        )
+
     cmd = [
         'cmake',
         '-S', str(ROOT),
         '-B', str(build_dir),
         f'-DBUILD_XRTC_DEMO={"ON" if demo else "OFF"}',
+        f'-DBoost_ROOT={boost_prefix.as_posix()}',
     ]
     if demo:
         if qt_prefix is None:
@@ -349,6 +385,7 @@ def build_target(
     job: int,
     demo: bool,
     qt_lib: str | None,
+    boost_path: str | None,
     clean: bool,
     run: bool,
 ) -> None:
@@ -357,6 +394,7 @@ def build_target(
 
     build_dir = build_dir_for(config)
     qt_prefix = resolve_qt_prefix(qt_lib)
+    boost_prefix = resolve_boost_prefix(boost_path)
 
     if clean:
         clean_build(build_dir)
@@ -364,6 +402,11 @@ def build_target(
     env = prepare_build_env(os.environ.copy())
 
     if not cmake_configured(build_dir):
+        if boost_prefix is None:
+            raise RuntimeError(
+                '首次配置需要 --boost_path 指定 Boost 路径，'
+                '例: --boost_path=F:/wy/boost_install'
+            )
         if demo and qt_prefix is None:
             raise RuntimeError(
                 '--demo 需要 --qt_lib 指定 Qt 路径，'
@@ -374,6 +417,7 @@ def build_target(
             config=config,
             demo=demo,
             qt_prefix=qt_prefix,
+            boost_prefix=boost_prefix,
             env=env,
         )
     else:
@@ -381,6 +425,7 @@ def build_target(
             build_dir,
             demo=demo,
             qt_prefix=qt_prefix,
+            boost_prefix=boost_prefix,
             env=env,
         )
 
@@ -407,6 +452,7 @@ def main() -> int:
             job=args.job,
             demo=args.demo,
             qt_lib=args.qt_lib,
+            boost_path=args.boost_path,
             clean=args.clean,
             run=args.run,
         )

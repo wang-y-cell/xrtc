@@ -128,9 +128,8 @@ add_library(xrtc STATIC
 
 target_include_directories(xrtc
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/xrtc
-    PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
         ${WEBRTC_INCLUDE}/third_party/abseil-cpp
         ${WEBRTC_INCLUDE}/third_party/libyuv/include
         ${WEBRTC_INCLUDE}

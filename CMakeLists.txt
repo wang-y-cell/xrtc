@@ -19,18 +19,20 @@ set(WEBRTC_LIB_DEBUG_DIR "${WEBRTC_ROOT}/lib_debug")
 set(WEBRTC_LIB_RELEASE_DIR "${WEBRTC_ROOT}/lib_release")
 
 function(xrtc_ensure_webrtc_sdk)
+    # 如果预编译 SDK 存在，则直接使用
     if(EXISTS "${WEBRTC_INCLUDE}/api/peer_connection_interface.h"
        AND EXISTS "${WEBRTC_LIB_DEBUG_DIR}/webrtc.lib"
        AND EXISTS "${WEBRTC_LIB_RELEASE_DIR}/webrtc.lib")
         return()
     endif()
 
+    # 打印准备开始下载信息
     message(STATUS "WebRTC SDK missing under ${WEBRTC_ROOT}, downloading...")
     set(_archive "${CMAKE_BINARY_DIR}/webrtc.7z")
     file(DOWNLOAD "${WEBRTC_RELEASE_URL}" "${_archive}"
-        SHOW_PROGRESS
-        STATUS _dl_status
-        TLS_VERIFY ON)
+        SHOW_PROGRESS #显示下载进度
+        STATUS _dl_status #将下载结果存入列表。紧接着通过 list(GET _dl_status 0 _dl_code) 检查返回码，如果不是 0，就抛出 FATAL_ERROR 并附带错误信息。这比 CMake 默认的网络报错要清晰得多
+        TLS_VERIFY ON) #强制验证 HTTPS 证书，防止中间人攻击，保证了极高的安全性
     list(GET _dl_status 0 _dl_code)
     if(NOT _dl_code EQUAL 0)
         list(GET _dl_status 1 _dl_msg)

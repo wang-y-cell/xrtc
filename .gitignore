@@ -7,3 +7,4 @@ build/
 webrtc/include/
 webrtc/lib_release/
 webrtc/lib_debug/
+*.log

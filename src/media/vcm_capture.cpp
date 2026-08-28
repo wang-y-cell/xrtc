@@ -5,6 +5,7 @@
 
 #include "api/video/i420_buffer.h"
 #include <engine/xrtc_global.h>
+#include <media/video_capability_selector.h>
 #include <xrtc/ixrtc_engine.h>
 #include "libyuv/convert_argb.h"
 #include <spdlog/spdlog.h>
@@ -107,6 +108,14 @@ bool VcmCapture::stop() {
     return true;
 }
 
+void VcmCapture::apply_capability(
+    const webrtc::VideoCaptureCapability& capability) {
+    _capability = capability;
+    _width = static_cast<size_t>(_capability.width);
+    _height = static_cast<size_t>(_capability.height);
+    _fps = _capability.maxFPS;
+}
+
 /**
  * @brief 初始化视频采集模块
  * @param width 视频宽度
@@ -117,27 +126,60 @@ bool VcmCapture::stop() {
 */
 bool VcmCapture::init(size_t width, size_t height, int fps,
                       const std::string& device_id) {
-    //根据设备id创建视频采集模块
     _vcm = webrtc::VideoCaptureFactory::Create(device_id.c_str());
     if (!_vcm) {
         spdlog::error("创建视频采集模块失败, device_id: {}", device_id);
         return false;
     }
 
-    //注册视频采集数据回调,当有视频数据时，会回调OnFrame方法
     _vcm->RegisterCaptureDataCallback(this);
 
-    //获取视频采集设备信息
-    std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> device_info(
-        webrtc::VideoCaptureFactory::CreateDeviceInfo());
-    //获取视频采集设备信息,并设置视频采集能力
-    device_info->GetCapability(_vcm->CurrentDeviceName(), 0, _capability);
-    _capability.width = static_cast<int32_t>(width);
-    _capability.height = static_cast<int32_t>(height);
-    _capability.maxFPS = fps;
-    _capability.videoType = webrtc::VideoType::kI420;
-
+    // 用策略在设备真实能力中选出最终格式，避免硬写不支持的分辨率导致 StartCapture 失败
+    PreferRequestedStrategy strategy;
+    const char* uid = _vcm->CurrentDeviceName();
+    const std::string resolve_id =
+        (uid && uid[0] != '\0') ? std::string(uid) : device_id;
+    apply_capability(VideoCapabilitySelector::Resolve(
+        resolve_id, static_cast<int>(width), static_cast<int>(height), fps,
+        &strategy));
     return true;
+}
+
+bool VcmCapture::restart(size_t width, size_t height, int fps) {
+    auto do_restart = [this, width, height, fps]() -> bool {
+        if (!_vcm) {
+            spdlog::error("视频采集模块未初始化, 无法 restart");
+            return false;
+        }
+
+        const bool was_started = _vcm->CaptureStarted();
+        if (was_started) {
+            _vcm->StopCapture();
+        }
+
+        PreferRequestedStrategy strategy;
+        const char* uid = _vcm->CurrentDeviceName();
+        const std::string resolve_id =
+            (uid && uid[0] != '\0') ? std::string(uid) : _device_id;
+        apply_capability(VideoCapabilitySelector::Resolve(
+            resolve_id, static_cast<int>(width), static_cast<int>(height), fps,
+            &strategy));
+
+        if (!was_started) {
+            return true;
+        }
+        if (_vcm->StartCapture(_capability) != 0) {
+            spdlog::warn("restart 后 StartCapture 失败, device_id: {}",
+                         resolve_id);
+            return false;
+        }
+        return true;
+    };
+
+    if (_current_thread->IsCurrent()) {
+        return do_restart();
+    }
+    return _current_thread->BlockingCall(do_restart);
 }
 
 void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {

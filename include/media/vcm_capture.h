@@ -11,6 +11,9 @@
 
 namespace xrtc {
 
+/// 任何需要获取视频帧的模块，都需要继承webrtc::VideoSinkInterface并实现这个接口
+///实现了该接口的类，必须重写 OnFrame(const webrtc::VideoFrame& frame) 方法。当上游的视频轨道（VideoTrack）有新的视频帧可用时，WebRTC 引擎会自动调用这个方法来分发数据
+///模板参数 webrtc::VideoFrame 起到了指定数据类型的作用
 class VcmCapture : public IXRtcMediaSource,
                    public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
 public:
@@ -50,11 +53,19 @@ public:
     void set_track_source(
         webrtc::scoped_refptr<XrtcVideoTrackSource> track_source);
 
+    /// 按策略重选能力并重启采集（会话中途改分辨率用；不影响公开 API）
+    bool restart(size_t width, size_t height, int fps);
+
+    size_t width() const { return _width; }
+    size_t height() const { return _height; }
+    int fps() const { return _fps; }
+
 private:
     VcmCapture(size_t width, size_t height, int fps,
                const std::string& device_id) noexcept;
     bool init(size_t width, size_t height, int fps,
               const std::string& device_id);
+    void apply_capability(const webrtc::VideoCaptureCapability& capability);
     void destroy();
 
     //视频宽度,构造函数初始化 

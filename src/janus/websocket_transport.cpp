@@ -157,7 +157,7 @@ struct WebsocketTransport::Impl {
     }
 
     /**
-      @brief 处理dns解析成功后或者解析失败后调用的回调
+      @brief 处理dns解析成功后或者解析失败后调用的回调,解析成功之后开始tcp三次握手
       负责异步开启tcp连接
       @param ec 错误码
       @param results 解析结果
@@ -183,7 +183,7 @@ struct WebsocketTransport::Impl {
     }
 
     /**
-      @brief 处理tcp连接到服务端之后调用的回调
+      @brief 处理tcp连接到服务端之后调用的回调,连接成功之后开始websocket握手
       如果连接成功就处理websocket握手请求
       @param ec 错误码
     */

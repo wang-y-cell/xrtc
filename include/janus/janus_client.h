@@ -180,7 +180,7 @@
  *         "videoroom": "joined",
  *         "room": 1234,
  *         "id": 987654321,                 // 本端 feed id，供他人订阅
- *         "private_id": 12345,
+ *         "private_id": 12345,             //私有令牌,只有自己知道
  *         "publishers": [                  // 房间内已在推流的其他人（可为空）
  *           { "id": 111, "display": "user-a", "audio_codec": "opus", "video_codec": "vp8" }
  *         ]
@@ -457,7 +457,8 @@ private:
     void send_json(const json& obj);
     //生成一个唯一的transaction字段的值
     std::string new_transaction();
-	///websocket握手成功之后调用,创建会话
+	///websocket握手成功之后调用,创建会话,开启之后的所有操作
+    ///后面的操作基于on_ws_message槽函数中
     utils::slots_t<> on_ws_connected();
     //获得从websocket中获得网络数据
     utils::slots_t<> on_ws_message(const std::string& text);

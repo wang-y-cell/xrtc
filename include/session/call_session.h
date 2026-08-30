@@ -51,6 +51,7 @@ private:
     void bindJanusSignals();
     //本地客户端进入janus房间之后调用
     slots_t<> onJoinedAsPublisher();
+    //当客户端进入janus房间之后,如果房间中还有人推流,则调用这个槽函数
     slots_t<> onPublishers(const std::vector<JanusPublisherInfo>& pubs);
     slots_t<> onPublisherLeft(uint64_t feed_id, const std::string& display);
     //收到janus的sdp offer,设置本地sdp描述
@@ -65,7 +66,7 @@ private:
     ///在 Janus 进房成功后，把本地音视频采集和 WebRTC 轨道准备好，供后面的 createPublisherPc() 做 AddTrack 和 CreateOffer 推流
     ///开启摄像头采集画面
     XRtcStatus ensureLocalMedia();
-    ///设置回调函数,创建peerconnection后并将视频轨道和音频轨道加入进去
+    ///设置peerconnectionHandler回调函数,创建peerconnectionHandler对象,调用init函数创建peerconnection对象,并将视频轨道和音频轨道加入进去
     void createPublisherPc();
     ///通过远端的信息之后发送janus请求订阅对方
     void subscribeFeed(const JanusPublisherInfo& info);
@@ -90,6 +91,7 @@ private:
     std::vector<utils::scoped_connection> janus_conns_;
 
     VcmCapture* capture_ = nullptr;
+    /// 接收来自vcmCapture采集的帧，并通过VideoBroadcaster推送到WebRTC
     webrtc::scoped_refptr<XrtcVideoTrackSource> video_source_;
     ///音频轨道
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track_;

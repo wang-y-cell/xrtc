@@ -82,6 +82,7 @@ XRtcGlobal::GetOrCreatePeerConnectionFactory() {
         network_thread_.get(), worker_thread_.get(), api_thread_.get(), adm_,
         webrtc::CreateBuiltinAudioEncoderFactory(),
         webrtc::CreateBuiltinAudioDecoderFactory(),
+        //视频编码器工厂,用来创建视频编码器,目前写死可以使用以下编解码器
         std::make_unique<webrtc::VideoEncoderFactoryTemplate<
             webrtc::LibvpxVp8EncoderTemplateAdapter,
             webrtc::LibvpxVp9EncoderTemplateAdapter,

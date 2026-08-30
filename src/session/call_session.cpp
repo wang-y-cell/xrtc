@@ -148,12 +148,14 @@ slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
                                                 const std::string& cand) {
     XRtcGlobal::instance().api_thread()->PostTask(
         [this, handle_id, mid, idx, cand]() {
+            //如果这个ice是我推流的ice的回复
             if (handle_id == janus_->publisher_handle()) {
                 if (publisher_pc_) {
                     publisher_pc_->AddIceCandidate(mid, idx, cand);
                 }
                 return;
             }
+            //如果这个ice是拉流的回复
             auto it = subscriber_pcs_.find(handle_id);
             if (it != subscriber_pcs_.end()) {
                 it->second->AddIceCandidate(mid, idx, cand);
@@ -362,7 +364,7 @@ slots_t<> CallSession::onJoinedAsPublisher() {
     XRtcGlobal::instance().api_thread()->PostTask([this]() {
         spdlog::info(
             "[session] onJoinedAsPublisher: starting local media + PC");
-        //创建并开启摄像头,启动视频采集
+        //创建并开启摄像头,启动视频采集,创建视频和音频轨道
         auto st = ensureLocalMedia();
         if (!st) {
             spdlog::error("[session] ensureLocalMedia failed: {}",

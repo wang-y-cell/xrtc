@@ -8,3 +8,4 @@ webrtc/include/
 webrtc/lib_release/
 webrtc/lib_debug/
 *.log
+update_note.md

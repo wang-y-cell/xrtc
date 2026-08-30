@@ -14,11 +14,14 @@ namespace xrtc {
 class PeerConnectionHandler : public webrtc::PeerConnectionObserver {
 public:
     struct Callbacks {
+        //将sdp发送给janus
         std::function<void(const std::string& type, const std::string& sdp)>
             on_local_description;
+        //将ice候选者发送给janus
         std::function<void(const std::string& sdp_mid, int mline_index,
                            const std::string& candidate)>
             on_ice_candidate;
+        //ice收集完成回调
         std::function<void()> on_ice_gathering_complete;
         std::function<void(
             webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>)>

@@ -163,6 +163,9 @@ void Widget::resizeEvent(QResizeEvent* event) {
  * 如果已有视频源：停止并销毁视频源，清空预览画面，恢复按钮样式。
  */
 void Widget::start_video_source() {
+    if (in_meeting_) {
+        return;
+    }
     ui->video_capture->setDisabled(true);
     if (!video_source) {
         const int index = ui->camera_list->currentIndex();
@@ -202,14 +205,16 @@ void Widget::start_video_source() {
  * 然后从界面控件读取配置并调用引擎的 join 接口。
  */
 void Widget::join_meeting() {
+    // 一进房流程即禁用预览，避免会话采集回调改掉按钮文案
+    in_meeting_ = true;
+    ui->video_capture->setEnabled(false);
+
     // join 会自行采集；若已有预览源先停掉，避免双开摄像头
     if (video_source) {
         video_source->stop();
         engine->destroy_video_source(video_source);
         video_source = nullptr;
         clear_preview();
-        ui->video_capture->setStyleSheet(btnStart);
-        ui->video_capture->setText(QString::fromUtf8("开启本地预览"));
     }
 
     xrtc::XRTCJoinConfig config;
@@ -251,6 +256,8 @@ void Widget::join_meeting() {
 void Widget::leave_meeting() {
     engine->leave();
     clear_remote_preview();
+    in_meeting_ = false;
+    ui->video_capture->setEnabled(true);
     ui->btn_join->setEnabled(true);
     ui->status_label->setText(QString::fromUtf8("状态: left"));
 }
@@ -265,6 +272,10 @@ void Widget::video_source_start_event(xrtc::IXRtcMediaSource*,
     QMetaObject::invokeMethod(
         this,
         [this, error]() {
+            // 会议内采集也会回调此处，不改预览按钮文案
+            if (in_meeting_) {
+                return;
+            }
             if (error == xrtc::XRtcError::kNOERROR) {
                 ui->video_capture->setStyleSheet(btnStop);
                 ui->video_capture->setText(QString::fromUtf8("停止本地预览"));
@@ -287,6 +298,9 @@ void Widget::video_source_stop_event(xrtc::IXRtcMediaSource*,
     QMetaObject::invokeMethod(
         this,
         [this, error]() {
+            if (in_meeting_) {
+                return;
+            }
             if (error == xrtc::XRtcError::kNOERROR) {
                 ui->video_capture->setStyleSheet(btnStart);
                 ui->video_capture->setText(QString::fromUtf8("开启本地预览"));
@@ -361,10 +375,14 @@ void Widget::on_join_result(xrtc::XRtcError error, const std::string& message) {
         [this, error, message]() {
             ui->btn_join->setEnabled(error != xrtc::XRtcError::kNOERROR);
             if (error == xrtc::XRtcError::kNOERROR) {
+                in_meeting_ = true;
+                ui->video_capture->setEnabled(false);
                 ui->status_label->setText(
                     QString::fromUtf8("状态: joined - %1")
                         .arg(QString::fromStdString(message)));
             } else {
+                in_meeting_ = false;
+                ui->video_capture->setEnabled(true);
                 ui->status_label->setText(
                     QString::fromUtf8("状态: join failed - %1")
                         .arg(QString::fromStdString(message)));
@@ -384,6 +402,8 @@ void Widget::on_leave(xrtc::XRtcError) {
     QMetaObject::invokeMethod(
         this,
         [this]() {
+            in_meeting_ = false;
+            ui->video_capture->setEnabled(true);
             ui->btn_join->setEnabled(true);
             ui->status_label->setText(QString::fromUtf8("状态: left"));
             clear_remote_preview();

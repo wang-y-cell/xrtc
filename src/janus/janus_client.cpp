@@ -410,6 +410,7 @@ void JanusClient::handle_success(const json& msg) {
             feed_to_handle_[feed] = handle;
         }
 
+        //以订阅者的身份进入房间
         json body = {{"request", "join"},
                      {"ptype", "subscriber"},
                      {"room", config_.room_id},
@@ -452,7 +453,9 @@ void JanusClient::handle_event(const json& msg) {
     */
     const json plugindata = msg.value("plugindata", json::object());
     const json data = plugindata.value("data", json::object());
+    //你进入这个房间号
     const std::string videoroom = data.value("videoroom", "");
+    //你进入这个房间之后,在这个房间的feed编号,可以出现在对方收到的 publishers 列表里
     const uint64_t handle_id = msg.value("sender", static_cast<uint64_t>(0));
 
     ///收集发布者信息,这些发布者是会议中存在的人

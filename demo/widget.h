@@ -99,6 +99,7 @@ private:
     Ui::Widget* ui;                                  ///< Qt Designer 生成的界面对象
     xrtc::IXRtcEngine* engine = nullptr;             ///< XRTC 引擎实例
     xrtc::IXRtcMediaSource* video_source = nullptr;  ///< 本地视频采集源
+    bool in_meeting_ = false;  ///< 已在会议中时禁用本地预览按钮且不改其文案
 
     std::vector<xrtc::XRTCDeviceInfo> video_devices_;  ///< 摄像头设备列表
 

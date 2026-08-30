@@ -28,6 +28,7 @@ XRTCConnectionState ToXrtcState(
     return XRTCConnectionState::kNew;
 }
 
+///创建sdp描述的观察者,当创建本地sdp完成之后会回调这个类的OnSuccess函数,也即是将创建的sdp设置为本地sdp,之后会回调LocalSetObserver类的OnSuccess函数,
 class CreateSdpObserver : public webrtc::CreateSessionDescriptionObserver {
 public:
     CreateSdpObserver(
@@ -44,6 +45,9 @@ public:
         //得到类型offer或者answer
         const std::string type = webrtc::SdpTypeToString(desc->GetType());
         //告诉pc,这份sdp是我本地的描述
+        //设置完本地sdp之后调用LocalSetObserver类的OnSuccess函数
+        //设置本地sdp描述成功的同时开始收集ice候选者,调用AddIceCandidate函数
+        //调用AddIceCandidate函数会有多次
         pc_->SetLocalDescription(
             webrtc::make_ref_counted<LocalSetObserver>(callbacks_, type, sdp)
                 .get(),
@@ -69,8 +73,9 @@ private:
               type_(std::move(type)),
               sdp_(std::move(sdp)) {}
 
-        ///SetLocalDescription 异步完成后的回调：
-        ///WebRTC 已经将本地 SDP 设置到 PeerConnection 中，
+        //SetLocalDescription 异步完成后的回调：
+        //WebRTC 已经将本地 SDP 设置到 PeerConnection 中，
+        //此处的回调函数是将sdp发送给janus
         void OnSuccess() override {
             if (callbacks_.on_local_description) {
                 callbacks_.on_local_description(type_, sdp_);
@@ -215,6 +220,7 @@ void PeerConnectionHandler::CreateOffer() {
         return;
     }
     //异步调用,此函数会异步设置本地sdp描述并异步发送给janus
+    //先创建本地sdp描述,创建完之后会回调CreateSdpObserver类的OnSuccess函数,之后会回调LocalSetObserver类的OnSuccess函数
     pc_->CreateOffer(
         webrtc::make_ref_counted<CreateSdpObserver>(pc_, callbacks_, true)
             .get(),

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "modules/video_capture/video_capture_defines.h"
+#include <xrtc/xrtc_defines.h>
 
 namespace xrtc {
 
@@ -39,6 +40,16 @@ public:
                        const VideoFormat& requested) const override;
 };
 
+/// 公开策略 -> 内部策略实例（requested/standard 由调用方提供存储）
+inline const IVideoSelectStrategy& StrategyFor(
+    XRTCVideoSelectStrategy strategy,
+    PreferRequestedStrategy& requested,
+    PreferStandardStrategy& standard) {
+    return strategy == XRTCVideoSelectStrategy::kPreferStandard
+               ? static_cast<const IVideoSelectStrategy&>(standard)
+               : static_cast<const IVideoSelectStrategy&>(requested);
+}
+
 /// 枚举能力并应用策略；内部还会尝试 WebRTC GetBestMatchedCapability
 class VideoCapabilitySelector {
 public:
@@ -59,6 +70,14 @@ public:
         int height,
         int fps,
         const IVideoSelectStrategy* strategy = nullptr);
+
+    /// 便捷重载：直接使用公开策略枚举
+    static webrtc::VideoCaptureCapability Resolve(
+        const std::string& device_id,
+        int width,
+        int height,
+        int fps,
+        XRTCVideoSelectStrategy strategy);
 };
 
 }  // namespace xrtc

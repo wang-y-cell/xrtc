@@ -6,10 +6,55 @@
 #include "rtc_base/thread.h"
 #include <engine/xrtc_global.h>
 #include <media/vcm_capture.h>
+#include <media/video_capability_selector.h>
 #include <session/call_session.h>
 #include <spdlog/spdlog.h>
 
 namespace xrtc {
+
+namespace {
+
+ixrtc_video_config MergeVideoConfig(const ixrtc_video_config& config,
+                                    const XRTCVideoCaptureRequest& request) {
+    ixrtc_video_config merged = config;
+    const bool use_engine_request =
+        merged.width <= 0 && merged.height <= 0 && merged.fps <= 0;
+    if (merged.width <= 0) {
+        merged.width = request.format.width;
+    }
+    if (merged.height <= 0) {
+        merged.height = request.format.height;
+    }
+    if (merged.fps <= 0) {
+        merged.fps = request.format.fps;
+    }
+    if (use_engine_request) {
+        merged.select_strategy = request.strategy;
+    }
+    return merged;
+}
+
+XRTCJoinConfig MergeJoinConfig(const XRTCJoinConfig& config,
+                               const XRTCVideoCaptureRequest& request) {
+    XRTCJoinConfig merged = config;
+    const bool use_engine_request =
+        merged.width <= 0 && merged.height <= 0 && merged.fps <= 0;
+    if (merged.width <= 0) {
+        merged.width = request.format.width;
+    }
+    if (merged.height <= 0) {
+        merged.height = request.format.height;
+    }
+    if (merged.fps <= 0) {
+        merged.fps = request.format.fps;
+    }
+    if (use_engine_request) {
+        merged.select_strategy = request.strategy;
+    }
+    return merged;
+}
+
+}  // namespace
 
 IXRtcEngine* create_xrtc_engine(XRtcEngineObserver* observer) {
     return XRtcGlobal::instance().api_thread()->BlockingCall(
@@ -114,13 +159,62 @@ std::vector<XRTCDeviceInfo> XRtcEngine::get_audio_device_info() {
         });
 }
 
+std::vector<XRTCVideoFormat> XRtcEngine::get_video_capabilities(
+    const std::string& device_id) {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [device_id]() -> std::vector<XRTCVideoFormat> {
+            std::vector<XRTCVideoFormat> out;
+            if (device_id.empty()) {
+                return out;
+            }
+            const auto caps =
+                VideoCapabilitySelector::ListCapabilities(device_id);
+            out.reserve(caps.size());
+            for (const auto& f : caps) {
+                out.push_back({f.width, f.height, f.fps});
+            }
+            return out;
+        });
+}
+
+XRTCVideoFormat XRtcEngine::select_video_format(
+    const std::string& device_id,
+    const XRTCVideoFormat& requested,
+    XRTCVideoSelectStrategy strategy) {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [device_id, requested, strategy]() -> XRTCVideoFormat {
+            if (device_id.empty()) {
+                return requested;
+            }
+            const auto matched = VideoCapabilitySelector::Resolve(
+                device_id, requested.width, requested.height, requested.fps,
+                strategy);
+            return {matched.width, matched.height, matched.maxFPS};
+        });
+}
+
+void XRtcEngine::set_video_capture_request(
+    const XRTCVideoCaptureRequest& request) {
+    XRtcGlobal::instance().api_thread()->BlockingCall([this, request]() {
+        video_capture_request_ = request;
+    });
+}
+
+XRTCVideoCaptureRequest XRtcEngine::get_video_capture_request() const {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [this]() -> XRTCVideoCaptureRequest { return video_capture_request_; });
+}
+
 IXRtcMediaSource* XRtcEngine::create_video_source(
     const ixrtc_video_config& video_config
 ) {
     return XRtcGlobal::instance().api_thread()->BlockingCall(
-        [video_config]() -> IXRtcMediaSource* {
-            return VcmCapture::create(video_config.width, video_config.height,
-                                      video_config.fps, video_config.device_id);
+        [this, video_config]() -> IXRtcMediaSource* {
+            const ixrtc_video_config merged =
+                MergeVideoConfig(video_config, video_capture_request_);
+            return VcmCapture::create(
+                merged.width, merged.height, merged.fps, merged.device_id,
+                merged.select_strategy);
         });
 }
 
@@ -131,7 +225,8 @@ void XRtcEngine::destroy_video_source(IXRtcMediaSource* video_source) {
 }
 
 void XRtcEngine::join(const XRTCJoinConfig& config) {
-    XRTCJoinConfig cfg = config;
+    const XRTCVideoCaptureRequest request = get_video_capture_request();
+    XRTCJoinConfig cfg = MergeJoinConfig(config, request);
     //如果摄像头id为空,使用摄像头列表的第一个摄像头
     if (cfg.video_device_id.empty()) {
         auto devices = get_video_device_info();

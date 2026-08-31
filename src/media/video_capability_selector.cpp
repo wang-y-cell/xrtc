@@ -127,6 +127,19 @@ webrtc::VideoCaptureCapability VideoCapabilitySelector::Resolve(
     int width,
     int height,
     int fps,
+    XRTCVideoSelectStrategy strategy) {
+    PreferRequestedStrategy requested;
+    PreferStandardStrategy standard;
+    const IVideoSelectStrategy& chosen =
+        StrategyFor(strategy, requested, standard);
+    return Resolve(device_id, width, height, fps, &chosen);
+}
+
+webrtc::VideoCaptureCapability VideoCapabilitySelector::Resolve(
+    const std::string& device_id,
+    int width,
+    int height,
+    int fps,
     const IVideoSelectStrategy* strategy) {
     PreferRequestedStrategy default_strategy;
     const IVideoSelectStrategy& chosen =

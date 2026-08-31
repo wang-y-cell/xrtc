@@ -13,12 +13,35 @@ struct XRTCDeviceInfo {
     std::string device_id;    /// 设备ID
 };
 
+/// 视频采集格式（宽高帧率）
+struct XRTCVideoFormat {
+    int width = 0;
+    int height = 0;
+    int fps = 0;
+};
+
+/// 在设备能力中选择采集格式的策略
+enum class XRTCVideoSelectStrategy {
+    kPreferRequested = 0,  /// 贴近请求的宽高帧率
+    kPreferStandard = 1,   /// 优先 1280x720@30，其次 640x480
+};
+
+/// 视频采集请求（期望格式 + 选择策略）
+struct XRTCVideoCaptureRequest {
+    XRTCVideoFormat format{640, 480, 30};
+    XRTCVideoSelectStrategy strategy =
+        XRTCVideoSelectStrategy::kPreferRequested;
+};
+
 ///视频配置,包括视频宽度、视频高度、视频帧率、设备ID
 struct ixrtc_video_config {
-    int width = 640;          /// 视频宽度
-    int height = 480;         /// 视频高度
-    int fps = 30;             /// 视频帧率
+    int width = 0;            /// 0 表示使用 engine 当前采集请求
+    int height = 0;
+    int fps = 0;
     std::string device_id;    /// 设备ID
+    /// kPreferRequested 且未单独指定时，沿用 engine 当前策略
+    XRTCVideoSelectStrategy select_strategy =
+        XRTCVideoSelectStrategy::kPreferRequested;
 };
 
 ///ICE服务器信息,包括ICE服务器地址、ICE服务器用户名、ICE服务器密码
@@ -42,9 +65,12 @@ struct XRTCJoinConfig {
     std::string admin_key;         /// Janus VideoRoom admin_key（服务端要求时填写）
     std::string video_device_id; /// 为空则用第一个摄像头
     std::string audio_device_id; /// 预留；当前用默认录音设备
-    int width = 640;
-    int height = 480;
-    int fps = 30;
+    int width = 0;   /// 0 表示使用 engine 当前采集请求
+    int height = 0;
+    int fps = 0;
+    /// kPreferRequested 且未单独指定时，沿用 engine 当前策略
+    XRTCVideoSelectStrategy select_strategy =
+        XRTCVideoSelectStrategy::kPreferRequested;
     std::vector<XRTCIceServer> ice_servers;  /// 为空则使用默认 STUN
 };
 

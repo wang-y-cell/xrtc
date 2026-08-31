@@ -295,9 +295,10 @@ XRtcStatus CallSession::ensureLocalMedia() {
 
     //创建并启动摄像头采集, 如果没有创建就创建
     if (!capture_) {
-        capture_ = VcmCapture::create(static_cast<size_t>(config_.width),
-                                      static_cast<size_t>(config_.height),
-                                      config_.fps, config_.video_device_id);
+        capture_ = VcmCapture::create(
+            static_cast<size_t>(config_.width),
+            static_cast<size_t>(config_.height), config_.fps,
+            config_.video_device_id, config_.select_strategy);
         //如果创建失败,返回错误
         if (!capture_) {
             return xrtc_err(XRtcError::kMediaStartFailed);

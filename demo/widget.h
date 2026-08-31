@@ -60,6 +60,10 @@ private:
     void render_preview_frame();
     /// 在 UI 线程渲染远端预览帧（由 on_remote_video_frame 调度触发）
     void render_remote_preview_frame();
+    /// 从界面读取当前采集请求并同步到 engine
+    xrtc::XRTCVideoCaptureRequest current_video_request() const;
+    /// 刷新「实际格式」标签（可传入设备 id；为空则仅显示请求值）
+    void refresh_actual_format_label(const std::string& device_id = {});
 
     // ---------- XRtcEngineObserver 回调（引擎线程） ----------
 
@@ -94,6 +98,8 @@ private slots:
     void join_meeting();
     /// 槽：点击“离开会议”按钮
     void leave_meeting();
+    /// 槽：修改采集请求后更新 engine 与实际格式提示
+    void on_video_request_changed();
 
 private:
     Ui::Widget* ui;                                  ///< Qt Designer 生成的界面对象

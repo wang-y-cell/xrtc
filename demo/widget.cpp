@@ -48,6 +48,57 @@ Widget::Widget(QWidget* parent)
     init_preview();
     init_connection();
     init_device_list();
+    on_video_request_changed();
+}
+
+xrtc::XRTCVideoCaptureRequest Widget::current_video_request() const {
+    xrtc::XRTCVideoCaptureRequest request;
+    request.format.width = ui->video_width->value();
+    request.format.height = ui->video_height->value();
+    request.format.fps = ui->video_fps->value();
+    request.strategy = ui->video_strategy->currentIndex() == 1
+                           ? xrtc::XRTCVideoSelectStrategy::kPreferStandard
+                           : xrtc::XRTCVideoSelectStrategy::kPreferRequested;
+    return request;
+}
+
+void Widget::refresh_actual_format_label(const std::string& device_id) {
+    const auto request = current_video_request();
+    xrtc::XRTCVideoFormat actual = request.format;
+    if (!device_id.empty()) {
+        actual = engine->select_video_format(device_id, request.format,
+                                             request.strategy);
+    }
+    ui->label_actual_format->setText(
+        QString::fromUtf8("实际格式: %1×%2@%3")
+            .arg(actual.width)
+            .arg(actual.height)
+            .arg(actual.fps));
+}
+
+void Widget::on_video_request_changed() {
+    engine->set_video_capture_request(current_video_request());
+
+    std::string device_id;
+    const int index = ui->camera_list->currentIndex();
+    if (index >= 0 && index < static_cast<int>(video_devices_.size())) {
+        device_id = video_devices_[index].device_id;
+    }
+    refresh_actual_format_label(device_id);
+
+    if (video_source && !in_meeting_) {
+        const auto request = current_video_request();
+        if (!video_source->set_capture_request(request.format)) {
+            spdlog::warn("[ui] set_capture_request failed");
+        } else {
+            const auto actual = video_source->capture_format();
+            ui->label_actual_format->setText(
+                QString::fromUtf8("实际格式: %1×%2@%3 (采集中)")
+                    .arg(actual.width)
+                    .arg(actual.height)
+                    .arg(actual.fps));
+        }
+    }
 }
 
 /**
@@ -58,6 +109,16 @@ void Widget::init_connection() {
             &Widget::start_video_source);
     connect(ui->btn_join, &QPushButton::clicked, this, &Widget::join_meeting);
     connect(ui->btn_leave, &QPushButton::clicked, this, &Widget::leave_meeting);
+    connect(ui->video_width, qOverload<int>(&QSpinBox::valueChanged), this,
+            &Widget::on_video_request_changed);
+    connect(ui->video_height, qOverload<int>(&QSpinBox::valueChanged), this,
+            &Widget::on_video_request_changed);
+    connect(ui->video_fps, qOverload<int>(&QSpinBox::valueChanged), this,
+            &Widget::on_video_request_changed);
+    connect(ui->video_strategy, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &Widget::on_video_request_changed);
+    connect(ui->camera_list, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &Widget::on_video_request_changed);
 }
 
 /**
@@ -181,12 +242,19 @@ void Widget::start_video_source() {
             ui->video_capture->setDisabled(false);
             return;
         }
+        engine->set_video_capture_request(current_video_request());
         video_source = engine->create_video_source(video_config);
         if (!video_source) {
             QMessageBox::warning(this, "Warning", "Failed to create video source");
             ui->video_capture->setDisabled(false);
             return;
         }
+        const auto actual = video_source->capture_format();
+        ui->label_actual_format->setText(
+            QString::fromUtf8("实际格式: %1×%2@%3 (采集中)")
+                .arg(actual.width)
+                .arg(actual.height)
+                .arg(actual.fps));
         video_source->start();
     } else {
         video_source->stop();
@@ -232,6 +300,7 @@ void Widget::join_meeting() {
     if (index >= 0 && index < static_cast<int>(video_devices_.size())) {
         config.video_device_id = video_devices_[index].device_id;
     }
+    engine->set_video_capture_request(current_video_request());
 
     // 本机 coturn（勿留空，否则会退回 Google STUN）
     config.ice_servers.push_back(
@@ -241,9 +310,12 @@ void Widget::join_meeting() {
     config.ice_servers.push_back(
         {"turn:8.153.155.18:3478?transport=tcp", "wang_y", "wang_y"});
 
-    spdlog::info("[ui] join_meeting url={} room={} name={} create_if_missing={} ice={}",
+    spdlog::info("[ui] join_meeting url={} room={} name={} create_if_missing={} ice={} video={}x{}@{}",
                  config.janus_ws_url, config.room_id, config.display_name,
-                 config.create_room_if_missing, config.ice_servers.size());
+                 config.create_room_if_missing, config.ice_servers.size(),
+                 engine->get_video_capture_request().format.width,
+                 engine->get_video_capture_request().format.height,
+                 engine->get_video_capture_request().format.fps);
     ui->status_label->setText(QString::fromUtf8("状态: joining..."));
     ui->btn_join->setEnabled(false);
     engine->join(config);

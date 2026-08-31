@@ -1,6 +1,7 @@
 #pragma once
 
 #include <xrtc/ixrtc_media_source.h>
+#include <xrtc/xrtc_defines.h>
 #include <media/video_track_source.h>
 
 #include <memory>
@@ -23,10 +24,16 @@ public:
      * @param height 视频高度
      * @param fps 视频帧率
      * @param device_id 设备id
+     * @param strategy 能力选择策略
      * @return 视频采集模块
     */
-    static VcmCapture* create(size_t width, size_t height, int fps,
-                              const std::string& device_id);
+    static VcmCapture* create(
+        size_t width,
+        size_t height,
+        int fps,
+        const std::string& device_id,
+        XRTCVideoSelectStrategy strategy =
+            XRTCVideoSelectStrategy::kPreferRequested);
 
     ~VcmCapture() override;
 
@@ -40,6 +47,10 @@ public:
      * @return 是否成功
     */
     bool stop() override;
+
+    XRTCVideoFormat capture_format() const override;
+    bool set_capture_request(const XRTCVideoFormat& requested) override;
+
     /**
      * @brief 视频采集数据回调
      * @param frame 视频帧
@@ -62,7 +73,8 @@ public:
 
 private:
     VcmCapture(size_t width, size_t height, int fps,
-               const std::string& device_id) noexcept;
+               const std::string& device_id,
+               XRTCVideoSelectStrategy strategy) noexcept;
     bool init(size_t width, size_t height, int fps,
               const std::string& device_id);
     void apply_capability(const webrtc::VideoCaptureCapability& capability);
@@ -76,6 +88,7 @@ private:
     int _fps;
     //设备id,构造函数初始化 
     std::string _device_id;
+    XRTCVideoSelectStrategy _select_strategy;
     //当前线程,构造函数初始化 
     webrtc::Thread* _current_thread;
     /**

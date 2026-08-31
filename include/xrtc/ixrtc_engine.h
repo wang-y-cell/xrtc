@@ -56,6 +56,24 @@ public:
     virtual ~IXRtcEngine() = default;
     virtual std::vector<XRTCDeviceInfo> get_video_device_info() = 0;
     virtual std::vector<XRTCDeviceInfo> get_audio_device_info() = 0;
+
+    /// 枚举摄像头支持的采集格式（可能含重复分辨率、不同 pixel format）
+    virtual std::vector<XRTCVideoFormat> get_video_capabilities(
+        const std::string& device_id) = 0;
+
+    /// 按策略在设备能力中选出最终可用格式（含 WebRTC best-match）
+    /// 推荐在 create_video_source / join 前调用，用于 UI 展示实际分辨率
+    virtual XRTCVideoFormat select_video_format(
+        const std::string& device_id,
+        const XRTCVideoFormat& requested,
+        XRTCVideoSelectStrategy strategy =
+            XRTCVideoSelectStrategy::kPreferRequested) = 0;
+
+    /// 设置/读取全局默认采集请求（create_video_source / join 中宽高帧率为 0 时使用）
+    virtual void set_video_capture_request(
+        const XRTCVideoCaptureRequest& request) = 0;
+    virtual XRTCVideoCaptureRequest get_video_capture_request() const = 0;
+
     virtual IXRtcMediaSource* create_video_source(
         const ixrtc_video_config& video_config) = 0;
     virtual void destroy_video_source(IXRtcMediaSource* video_source) = 0;

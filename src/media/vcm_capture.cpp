@@ -13,11 +13,13 @@
 namespace xrtc {
 
 VcmCapture::VcmCapture(size_t width, size_t height, int fps,
-                       const std::string& device_id) noexcept
+                       const std::string& device_id,
+                       XRTCVideoSelectStrategy strategy) noexcept
     : _width(width),
       _height(height),
       _fps(fps),
       _device_id(device_id),
+      _select_strategy(strategy),
       _current_thread(webrtc::Thread::Current()) {}
 
 VcmCapture::~VcmCapture() {
@@ -25,8 +27,10 @@ VcmCapture::~VcmCapture() {
 }
 
 VcmCapture* VcmCapture::create(size_t width, size_t height, int fps,
-                               const std::string& device_id) {
-    VcmCapture* capture = new VcmCapture(width, height, fps, device_id);
+                               const std::string& device_id,
+                               XRTCVideoSelectStrategy strategy) {
+    VcmCapture* capture =
+        new VcmCapture(width, height, fps, device_id, strategy);
     if (capture && capture->init(width, height, fps, device_id)) {
         return capture;
     }
@@ -135,13 +139,12 @@ bool VcmCapture::init(size_t width, size_t height, int fps,
     _vcm->RegisterCaptureDataCallback(this);
 
     // 用策略在设备真实能力中选出最终格式，避免硬写不支持的分辨率导致 StartCapture 失败
-    PreferRequestedStrategy strategy;
     const char* uid = _vcm->CurrentDeviceName();
     const std::string resolve_id =
         (uid && uid[0] != '\0') ? std::string(uid) : device_id;
     apply_capability(VideoCapabilitySelector::Resolve(
         resolve_id, static_cast<int>(width), static_cast<int>(height), fps,
-        &strategy));
+        _select_strategy));
     return true;
 }
 
@@ -157,13 +160,12 @@ bool VcmCapture::restart(size_t width, size_t height, int fps) {
             _vcm->StopCapture();
         }
 
-        PreferRequestedStrategy strategy;
         const char* uid = _vcm->CurrentDeviceName();
         const std::string resolve_id =
             (uid && uid[0] != '\0') ? std::string(uid) : _device_id;
         apply_capability(VideoCapabilitySelector::Resolve(
             resolve_id, static_cast<int>(width), static_cast<int>(height), fps,
-            &strategy));
+            _select_strategy));
 
         if (!was_started) {
             return true;
@@ -180,6 +182,20 @@ bool VcmCapture::restart(size_t width, size_t height, int fps) {
         return do_restart();
     }
     return _current_thread->BlockingCall(do_restart);
+}
+
+XRTCVideoFormat VcmCapture::capture_format() const {
+    return {static_cast<int>(_width), static_cast<int>(_height), _fps};
+}
+
+bool VcmCapture::set_capture_request(const XRTCVideoFormat& requested) {
+    if (requested.width <= 0 || requested.height <= 0 || requested.fps <= 0) {
+        spdlog::warn("set_capture_request ignored: invalid {}x{}@{}",
+                     requested.width, requested.height, requested.fps);
+        return false;
+    }
+    return restart(static_cast<size_t>(requested.width),
+                   static_cast<size_t>(requested.height), requested.fps);
 }
 
 void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {

@@ -44,6 +44,11 @@ struct ixrtc_video_config {
         XRTCVideoSelectStrategy::kPreferRequested;
 };
 
+/// 音频采集配置
+struct ixrtc_audio_config {
+    std::string device_id;  /// 为空则用默认麦克风
+};
+
 ///ICE服务器信息,包括ICE服务器地址、ICE服务器用户名、ICE服务器密码
 struct XRTCIceServer {
     std::string uri;       /// 例如 stun:stun.l.google.com:19302
@@ -64,7 +69,7 @@ struct XRTCJoinConfig {
     uint32_t max_publishers = 6;   /// create 时最大发布者数
     std::string admin_key;         /// Janus VideoRoom admin_key（服务端要求时填写）
     std::string video_device_id; /// 为空则用第一个摄像头
-    std::string audio_device_id; /// 预留；当前用默认录音设备
+    std::string audio_device_id; /// 为空则用第一个麦克风（WebRTC ADM 经 AudioCapture）
     int width = 0;   /// 0 表示使用 engine 当前采集请求
     int height = 0;
     int fps = 0;

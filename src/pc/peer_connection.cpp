@@ -143,8 +143,7 @@ PeerConnectionHandler::~PeerConnectionHandler() {
     Close();
 }
 
-bool PeerConnectionHandler::Init
-(const std::vector<XRTCIceServer>& ice_servers) {
+bool PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers) {
     //在构造函数指定,如果还是nullptr,则返回false
     if (!factory_) {
         return false;

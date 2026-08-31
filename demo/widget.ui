@@ -72,6 +72,33 @@
       <widget class="QComboBox" name="audio_list"/>
      </item>
      <item>
+      <widget class="QPushButton" name="btn_audio_preview">
+       <property name="text">
+        <string>开启麦克风预览</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="label_mic_level">
+       <property name="text">
+        <string>麦克风音量</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QProgressBar" name="mic_level_bar">
+       <property name="maximum">
+        <number>100</number>
+       </property>
+       <property name="value">
+        <number>0</number>
+       </property>
+       <property name="textVisible">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QComboBox" name="camera_list"/>
      </item>
      <item>

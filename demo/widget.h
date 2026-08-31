@@ -90,24 +90,25 @@ private:
     /// 远端视频帧回调：拷贝一帧图像待 UI 线程渲染
     void on_remote_video_frame(uint64_t feed_id,
                                const xrtc::XRTCVideoFrame& frame) override;
+    void on_audio_level(xrtc::IXRtcMediaSource* audio_source,
+                        int level) override;
 
 private slots:
-    /// 槽：点击“开启/停止本地预览”按钮
     void start_video_source();
-    /// 槽：点击“加入会议”按钮
+    void start_audio_source();
     void join_meeting();
-    /// 槽：点击“离开会议”按钮
     void leave_meeting();
-    /// 槽：修改采集请求后更新 engine 与实际格式提示
     void on_video_request_changed();
 
 private:
-    Ui::Widget* ui;                                  ///< Qt Designer 生成的界面对象
-    xrtc::IXRtcEngine* engine = nullptr;             ///< XRTC 引擎实例
-    xrtc::IXRtcMediaSource* video_source = nullptr;  ///< 本地视频采集源
-    bool in_meeting_ = false;  ///< 已在会议中时禁用本地预览按钮且不改其文案
+    Ui::Widget* ui;
+    xrtc::IXRtcEngine* engine = nullptr;
+    xrtc::IXRtcMediaSource* video_source = nullptr;
+    xrtc::IXRtcMediaSource* audio_source = nullptr;
+    bool in_meeting_ = false;
 
     std::vector<xrtc::XRTCDeviceInfo> video_devices_;  ///< 摄像头设备列表
+    std::vector<xrtc::XRTCDeviceInfo> audio_devices_;  ///< 麦克风设备列表
 
     // ---- 本地预览相关 ----
     QGraphicsScene* preview_scene_ = nullptr;      ///< 本地预览场景

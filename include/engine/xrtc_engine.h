@@ -4,16 +4,12 @@
 #include <vector>
 
 #include "api/scoped_refptr.h"
-#include "modules/video_capture/video_capture.h"
 #include <xrtc/ixrtc_engine.h>
-
-namespace webrtc {
-class AudioDeviceModule;
-}  // namespace webrtc
 
 namespace xrtc {
 
 class CallSession;
+class XrtcAudioDeviceModule;
 
 class XRtcEngine : public IXRtcEngine {
 public:
@@ -25,6 +21,7 @@ public:
 
     std::vector<XRTCVideoFormat> get_video_capabilities(
         const std::string& device_id) override;
+
     XRTCVideoFormat select_video_format(
         const std::string& device_id,
         const XRTCVideoFormat& requested,
@@ -38,6 +35,10 @@ public:
         const ixrtc_video_config& video_config) override;
     void destroy_video_source(IXRtcMediaSource* video_source) override;
 
+    IXRtcMediaSource* create_audio_source(
+        const ixrtc_audio_config& audio_config) override;
+    void destroy_audio_source(IXRtcMediaSource* audio_source) override;
+
     void join(const XRTCJoinConfig& config) override;
     void leave() override;
     void mute_audio(bool mute) override;
@@ -45,8 +46,7 @@ public:
 
 private:
     XRTCVideoCaptureRequest video_capture_request_;
-    std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> video_device;
-    webrtc::scoped_refptr<webrtc::AudioDeviceModule> audio_device;
+    webrtc::scoped_refptr<XrtcAudioDeviceModule> audio_device_;
     std::unique_ptr<CallSession> call_session_;
 };
 

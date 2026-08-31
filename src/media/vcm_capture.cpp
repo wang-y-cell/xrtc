@@ -26,16 +26,46 @@ VcmCapture::~VcmCapture() {
     destroy();
 }
 
-VcmCapture* VcmCapture::create(size_t width, size_t height, int fps,
-                               const std::string& device_id,
-                               XRTCVideoSelectStrategy strategy) {
-    VcmCapture* capture =
-        new VcmCapture(width, height, fps, device_id, strategy);
+std::unique_ptr<VcmCapture> VcmCapture::Create(
+    size_t width,
+    size_t height,
+    int fps,
+    const std::string& device_id,
+    XRTCVideoSelectStrategy strategy) {
+    std::unique_ptr<VcmCapture> capture(
+        new VcmCapture(width, height, fps, device_id, strategy));
     if (capture && capture->init(width, height, fps, device_id)) {
         return capture;
     }
-    delete capture;
     return nullptr;
+}
+
+std::vector<XRTCDeviceInfo> VcmCapture::get_video_device_info() {
+    std::vector<XRTCDeviceInfo> device_info;
+    std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> info(
+        webrtc::VideoCaptureFactory::CreateDeviceInfo());
+    if (!info) {
+        spdlog::warn("[vcm] CreateDeviceInfo failed");
+        return device_info;
+    }
+    const uint32_t total = info->NumberOfDevices();
+    if (total == 0) {
+        spdlog::warn("没有找到摄像头设备");
+        return device_info;
+    }
+    char id[1024];
+    char name[256];
+    for (uint32_t i = 0; i < total; ++i) {
+        id[0] = '\0';
+        name[0] = '\0';
+        if (info->GetDeviceName(i, name, sizeof(name), id, sizeof(id)) == 0) {
+            XRTCDeviceInfo item;
+            item.device_name = name;
+            item.device_id = id;
+            device_info.push_back(std::move(item));
+        }
+    }
+    return device_info;
 }
 
 void VcmCapture::set_track_source(
@@ -184,6 +214,40 @@ bool VcmCapture::restart(size_t width, size_t height, int fps) {
     return _current_thread->BlockingCall(do_restart);
 }
 
+bool VcmCapture::device_switch(const std::string& device_id) {
+    if (device_id.empty()) {
+        spdlog::warn("[vcm] device_switch ignored: empty device_id");
+        return false;
+    }
+    auto do_switch = [this, device_id]() -> bool {
+        if (device_id == _device_id && _vcm) {
+            return true;
+        }
+        const bool was_started = _vcm && _vcm->CaptureStarted();
+        release_vcm();
+        if (!init(_width, _height, _fps, device_id)) {
+            spdlog::error("[vcm] device_switch init failed: {}", device_id);
+            return false;
+        }
+        _device_id = device_id;
+        if (!was_started) {
+            return true;
+        }
+        if (_vcm->StartCapture(_capability) != 0) {
+            spdlog::warn("[vcm] device_switch StartCapture failed: {}",
+                         device_id);
+            return false;
+        }
+        spdlog::info("[vcm] switched camera to {}", device_id);
+        return true;
+    };
+
+    if (_current_thread->IsCurrent()) {
+        return do_switch();
+    }
+    return _current_thread->BlockingCall(do_switch);
+}
+
 XRTCVideoFormat VcmCapture::capture_format() const {
     return {static_cast<int>(_width), static_cast<int>(_height), _fps};
 }
@@ -238,13 +302,17 @@ void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
     observer->on_video_frame(this, video_frame);
 }
 
+void VcmCapture::release_vcm() {
+    if (_vcm) {
+        _vcm->StopCapture();
+        _vcm->DeRegisterCaptureDataCallback();
+        _vcm = nullptr;
+    }
+}
+
 void VcmCapture::destroy() {
     auto do_destroy = [this]() {
-        if (_vcm) {
-            _vcm->StopCapture();
-            _vcm->DeRegisterCaptureDataCallback();
-            _vcm = nullptr;
-        }
+        release_vcm();
         track_source_ = nullptr;
     };
 

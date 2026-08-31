@@ -2,6 +2,7 @@
 
 #include "api/audio_options.h"
 #include <engine/xrtc_global.h>
+#include <media/xrtc_audio_device_module.h>
 #include <spdlog/spdlog.h>
 
 namespace xrtc {
@@ -227,10 +228,13 @@ void CallSession::Stop() {
         audio_track_ = nullptr;
         video_track_ = nullptr;
         video_source_ = nullptr;
+        if (audio_capture_) {
+            audio_capture_->stop();
+            audio_capture_.reset();
+        }
         if (capture_) {
             capture_->stop();
-            delete capture_;
-            capture_ = nullptr;
+            capture_.reset();
         }
     };
 
@@ -295,7 +299,7 @@ XRtcStatus CallSession::ensureLocalMedia() {
 
     //创建并启动摄像头采集, 如果没有创建就创建
     if (!capture_) {
-        capture_ = VcmCapture::create(
+        capture_ = VcmCapture::Create(
             static_cast<size_t>(config_.width),
             static_cast<size_t>(config_.height), config_.fps,
             config_.video_device_id, config_.select_strategy);
@@ -309,11 +313,34 @@ XRtcStatus CallSession::ensureLocalMedia() {
         capture_->start();
     }
 
-    //创建音频轨道
+    // 选麦 + 挂音量旁路；不在此 StartRecording（避免抢在 AudioState 前于错误线程启录）
+    if (!audio_capture_) {
+        auto base = XRtcGlobal::instance().audio_device();
+        auto* raw = static_cast<XrtcAudioDeviceModule*>(base.get());
+        if (!raw) {
+            return xrtc_err(XRtcError::kMediaStartFailed);
+        }
+        webrtc::scoped_refptr<XrtcAudioDeviceModule> xrtc_adm(raw);
+        audio_capture_ =
+            AudioCapture::Create(std::move(xrtc_adm), config_.audio_device_id);
+        if (!audio_capture_) {
+            return xrtc_err(XRtcError::kMediaStartFailed);
+        }
+        if (!audio_capture_->open()) {
+            spdlog::error("[session] AudioCapture open failed, device_id={}",
+                          config_.audio_device_id);
+            return xrtc_err(XRtcError::kMediaStartFailed);
+        }
+    }
+
+    // 创建音频轨道（AudioState 在 worker 上 Init/StartRecording）
     if (!audio_track_) {
-        //用平台默认麦克风创建音频轨（AudioOptions() 为空表示默认配置）
+        spdlog::info("[session] CreateAudioSource/Track");
         auto audio_source = factory->CreateAudioSource(webrtc::AudioOptions());
         audio_track_ = factory->CreateAudioTrack("audio0", audio_source.get());
+        spdlog::info("[session] audio track ready recording={}",
+                     XRtcGlobal::instance().audio_device() &&
+                         XRtcGlobal::instance().audio_device()->Recording());
     }
     //创建视频轨道
     if (!video_track_) {

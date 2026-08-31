@@ -9,6 +9,7 @@
 #include "concurrency/signal_and_slots/signal_and_slots.h"
 #include <janus/janus_client.h>
 #include <media/remote_video_sink.h>
+#include <media/audio_capture.h>
 #include <media/vcm_capture.h>
 #include <media/video_track_source.h>
 #include <pc/peer_connection.h>
@@ -90,7 +91,8 @@ private:
     std::unique_ptr<JanusClient> janus_;
     std::vector<utils::scoped_connection> janus_conns_;
 
-    VcmCapture* capture_ = nullptr;
+    std::unique_ptr<VcmCapture> capture_;
+    std::unique_ptr<AudioCapture> audio_capture_;
     /// 接收来自vcmCapture采集的帧，并通过VideoBroadcaster推送到WebRTC
     webrtc::scoped_refptr<XrtcVideoTrackSource> video_source_;
     ///音频轨道

@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <modules/video_capture/video_capture.h>
 #include <rtc_base/thread.h>
@@ -27,7 +28,7 @@ public:
      * @param strategy 能力选择策略
      * @return 视频采集模块
     */
-    static VcmCapture* create(
+    static std::unique_ptr<VcmCapture> Create(
         size_t width,
         size_t height,
         int fps,
@@ -35,21 +36,23 @@ public:
         XRTCVideoSelectStrategy strategy =
             XRTCVideoSelectStrategy::kPreferRequested);
 
+    /// 枚举本机摄像头
+    static std::vector<XRTCDeviceInfo> get_video_device_info();
+
     ~VcmCapture() override;
 
-    /**
-     * @brief 开始视频采集,会打开设置id的设备(摄像头),并将每一帧传入onframe中
-     * @return 是否成功
-    */
-    bool start() override;
-    /**
-     * @brief 停止视频采集
-     * @return 是否成功
-    */
-    bool stop() override;
+    VcmCapture(const VcmCapture&) = delete;
+    VcmCapture& operator=(const VcmCapture&) = delete;
 
-    XRTCVideoFormat capture_format() const override;
-    bool set_capture_request(const XRTCVideoFormat& requested) override;
+    bool start() override;
+    bool stop() override;
+    bool device_switch(const std::string& device_id) override;
+
+    /// 当前实际采集格式（可能经设备能力匹配后与请求不同）
+    XRTCVideoFormat capture_format() const;
+
+    /// 修改期望采集格式；采集中会按策略重选能力并重启
+    bool set_capture_request(const XRTCVideoFormat& requested);
 
     /**
      * @brief 视频采集数据回调
@@ -64,12 +67,13 @@ public:
     void set_track_source(
         webrtc::scoped_refptr<XrtcVideoTrackSource> track_source);
 
-    /// 按策略重选能力并重启采集（会话中途改分辨率用；不影响公开 API）
+    /// 按策略重选能力并重启采集（会话中途改分辨率用）
     bool restart(size_t width, size_t height, int fps);
 
     size_t width() const { return _width; }
     size_t height() const { return _height; }
     int fps() const { return _fps; }
+    const std::string& device_id() const { return _device_id; }
 
 private:
     VcmCapture(size_t width, size_t height, int fps,
@@ -79,29 +83,17 @@ private:
               const std::string& device_id);
     void apply_capability(const webrtc::VideoCaptureCapability& capability);
     void destroy();
+    /// 仅释放 VCM，保留 track_source_（换设备用）
+    void release_vcm();
 
-    //视频宽度,构造函数初始化 
     size_t _width;
-    //视频高度,构造函数初始化 
     size_t _height;
-    //视频帧率,构造函数初始化 
     int _fps;
-    //设备id,构造函数初始化 
     std::string _device_id;
     XRTCVideoSelectStrategy _select_strategy;
-    //当前线程,构造函数初始化 
     webrtc::Thread* _current_thread;
-    /**
-     * @brief 在init函数中创建,根据设备id创建视频采集模块,画面返回在OnFrame方法中,
-     * 当调用start函数时,会开始采集视频,并回调OnFrame方法
-    */
     webrtc::scoped_refptr<webrtc::VideoCaptureModule> _vcm;
-    //视频采集能力,构造函数初始化, 在init函数中获取视频采集设备信息,并设置视频采集能力
     webrtc::VideoCaptureCapability _capability;
-    /**
-     * @brief 视频源,在set_track_source函数中创建
-     * 负责处理OnFrame中的视频帧,并推入PeerConnection的本地视频源
-    */
     webrtc::scoped_refptr<XrtcVideoTrackSource> track_source_;
 };
 

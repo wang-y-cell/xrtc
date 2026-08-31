@@ -7,6 +7,8 @@
 #include <QResizeEvent>
 #include <QString>
 
+#include <algorithm>
+
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -87,16 +89,40 @@ void Widget::on_video_request_changed() {
     refresh_actual_format_label(device_id);
 
     if (video_source && !in_meeting_) {
+        // 公开 API 不暴露 VcmCapture；改请求后重建预览源以应用新分辨率
         const auto request = current_video_request();
-        if (!video_source->set_capture_request(request.format)) {
-            spdlog::warn("[ui] set_capture_request failed");
-        } else {
-            const auto actual = video_source->capture_format();
+        std::string device_id;
+        const int cam = ui->camera_list->currentIndex();
+        if (cam >= 0 && cam < static_cast<int>(video_devices_.size())) {
+            device_id = video_devices_[cam].device_id;
+        }
+        video_source->stop();
+        engine->destroy_video_source(video_source);
+        video_source = nullptr;
+
+        xrtc::ixrtc_video_config video_config;
+        video_config.device_id = device_id;
+        video_config.width = request.format.width;
+        video_config.height = request.format.height;
+        video_config.fps = request.format.fps;
+        video_config.select_strategy = request.strategy;
+        video_source = engine->create_video_source(video_config);
+        if (video_source && video_source->start()) {
+            const auto actual = engine->select_video_format(
+                device_id, request.format, request.strategy);
             ui->label_actual_format->setText(
                 QString::fromUtf8("实际格式: %1×%2@%3 (采集中)")
                     .arg(actual.width)
                     .arg(actual.height)
                     .arg(actual.fps));
+        } else {
+            spdlog::warn("[ui] recreate video source after format change failed");
+            if (video_source) {
+                engine->destroy_video_source(video_source);
+                video_source = nullptr;
+            }
+            ui->video_capture->setStyleSheet(btnStart);
+            ui->video_capture->setText(QString::fromUtf8("开启本地预览"));
         }
     }
 }
@@ -107,6 +133,8 @@ void Widget::on_video_request_changed() {
 void Widget::init_connection() {
     connect(ui->video_capture, &QPushButton::clicked, this,
             &Widget::start_video_source);
+    connect(ui->btn_audio_preview, &QPushButton::clicked, this,
+            &Widget::start_audio_source);
     connect(ui->btn_join, &QPushButton::clicked, this, &Widget::join_meeting);
     connect(ui->btn_leave, &QPushButton::clicked, this, &Widget::leave_meeting);
     connect(ui->video_width, qOverload<int>(&QSpinBox::valueChanged), this,
@@ -178,9 +206,8 @@ void Widget::init_device_list() {
         ui->camera_list->addItem(QString::fromUtf8(device.device_name.c_str()));
     }
 
-    std::vector<xrtc::XRTCDeviceInfo> audio_device_info =
-        engine->get_audio_device_info();
-    for (const auto& device : audio_device_info) {
+    audio_devices_ = engine->get_audio_device_info();
+    for (const auto& device : audio_devices_) {
         ui->audio_list->addItem(QString::fromUtf8(device.device_name.c_str()));
     }
 }
@@ -197,6 +224,11 @@ Widget::~Widget() {
         video_source->stop();
         engine->destroy_video_source(video_source);
         video_source = nullptr;
+    }
+    if (audio_source) {
+        audio_source->stop();
+        engine->destroy_audio_source(audio_source);
+        audio_source = nullptr;
     }
     xrtc::destroy_xrtc_engine(engine);
     engine = nullptr;
@@ -249,12 +281,16 @@ void Widget::start_video_source() {
             ui->video_capture->setDisabled(false);
             return;
         }
-        const auto actual = video_source->capture_format();
-        ui->label_actual_format->setText(
-            QString::fromUtf8("实际格式: %1×%2@%3 (采集中)")
-                .arg(actual.width)
-                .arg(actual.height)
-                .arg(actual.fps));
+        {
+            const auto req = current_video_request();
+            const auto actual = engine->select_video_format(
+                video_config.device_id, req.format, req.strategy);
+            ui->label_actual_format->setText(
+                QString::fromUtf8("实际格式: %1×%2@%3 (采集中)")
+                    .arg(actual.width)
+                    .arg(actual.height)
+                    .arg(actual.fps));
+        }
         video_source->start();
     } else {
         video_source->stop();
@@ -267,6 +303,46 @@ void Widget::start_video_source() {
     ui->video_capture->setDisabled(false);
 }
 
+void Widget::start_audio_source() {
+    if (in_meeting_) {
+        return;
+    }
+    ui->btn_audio_preview->setDisabled(true);
+    if (!audio_source) {
+        const int index = ui->audio_list->currentIndex();
+        if (index < 0 || index >= static_cast<int>(audio_devices_.size())) {
+            QMessageBox::warning(this, "Warning", "No microphone device");
+            ui->btn_audio_preview->setDisabled(false);
+            return;
+        }
+        xrtc::ixrtc_audio_config cfg;
+        cfg.device_id = audio_devices_[index].device_id;
+        audio_source = engine->create_audio_source(cfg);
+        if (!audio_source) {
+            QMessageBox::warning(this, "Warning",
+                                 "Failed to create audio source");
+            ui->btn_audio_preview->setDisabled(false);
+            return;
+        }
+        if (!audio_source->start()) {
+            QMessageBox::warning(this, "Warning",
+                                 "Failed to start audio source");
+            engine->destroy_audio_source(audio_source);
+            audio_source = nullptr;
+            ui->btn_audio_preview->setDisabled(false);
+            return;
+        }
+        ui->btn_audio_preview->setText(QString::fromUtf8("停止麦克风预览"));
+    } else {
+        audio_source->stop();
+        engine->destroy_audio_source(audio_source);
+        audio_source = nullptr;
+        ui->mic_level_bar->setValue(0);
+        ui->btn_audio_preview->setText(QString::fromUtf8("开启麦克风预览"));
+    }
+    ui->btn_audio_preview->setDisabled(false);
+}
+
 /**
  * @brief 槽：加入会议
  * join 会自行采集；若已有预览源先停掉，避免双开摄像头。
@@ -276,13 +352,21 @@ void Widget::join_meeting() {
     // 一进房流程即禁用预览，避免会话采集回调改掉按钮文案
     in_meeting_ = true;
     ui->video_capture->setEnabled(false);
+    ui->btn_audio_preview->setEnabled(false);
 
-    // join 会自行采集；若已有预览源先停掉，避免双开摄像头
+    // join 会自行采集；若已有预览源先停掉，避免双开摄像头/麦克风
     if (video_source) {
         video_source->stop();
         engine->destroy_video_source(video_source);
         video_source = nullptr;
         clear_preview();
+    }
+    if (audio_source) {
+        audio_source->stop();
+        engine->destroy_audio_source(audio_source);
+        audio_source = nullptr;
+        ui->mic_level_bar->setValue(0);
+        ui->btn_audio_preview->setText(QString::fromUtf8("开启麦克风预览"));
     }
 
     xrtc::XRTCJoinConfig config;
@@ -300,6 +384,11 @@ void Widget::join_meeting() {
     if (index >= 0 && index < static_cast<int>(video_devices_.size())) {
         config.video_device_id = video_devices_[index].device_id;
     }
+    const int audio_index = ui->audio_list->currentIndex();
+    if (audio_index >= 0 &&
+        audio_index < static_cast<int>(audio_devices_.size())) {
+        config.audio_device_id = audio_devices_[audio_index].device_id;
+    }
     engine->set_video_capture_request(current_video_request());
 
     // 本机 coturn（勿留空，否则会退回 Google STUN）
@@ -310,12 +399,13 @@ void Widget::join_meeting() {
     config.ice_servers.push_back(
         {"turn:8.153.155.18:3478?transport=tcp", "wang_y", "wang_y"});
 
-    spdlog::info("[ui] join_meeting url={} room={} name={} create_if_missing={} ice={} video={}x{}@{}",
+    spdlog::info("[ui] join_meeting url={} room={} name={} create_if_missing={} ice={} video={}x{}@{} mic={}",
                  config.janus_ws_url, config.room_id, config.display_name,
                  config.create_room_if_missing, config.ice_servers.size(),
                  engine->get_video_capture_request().format.width,
                  engine->get_video_capture_request().format.height,
-                 engine->get_video_capture_request().format.fps);
+                 engine->get_video_capture_request().format.fps,
+                 config.audio_device_id);
     ui->status_label->setText(QString::fromUtf8("状态: joining..."));
     ui->btn_join->setEnabled(false);
     engine->join(config);
@@ -330,6 +420,7 @@ void Widget::leave_meeting() {
     clear_remote_preview();
     in_meeting_ = false;
     ui->video_capture->setEnabled(true);
+    ui->btn_audio_preview->setEnabled(true);
     ui->btn_join->setEnabled(true);
     ui->status_label->setText(QString::fromUtf8("状态: left"));
 }
@@ -449,12 +540,14 @@ void Widget::on_join_result(xrtc::XRtcError error, const std::string& message) {
             if (error == xrtc::XRtcError::kNOERROR) {
                 in_meeting_ = true;
                 ui->video_capture->setEnabled(false);
+                ui->btn_audio_preview->setEnabled(false);
                 ui->status_label->setText(
                     QString::fromUtf8("状态: joined - %1")
                         .arg(QString::fromStdString(message)));
             } else {
                 in_meeting_ = false;
                 ui->video_capture->setEnabled(true);
+                ui->btn_audio_preview->setEnabled(true);
                 ui->status_label->setText(
                     QString::fromUtf8("状态: join failed - %1")
                         .arg(QString::fromStdString(message)));
@@ -476,6 +569,7 @@ void Widget::on_leave(xrtc::XRtcError) {
         [this]() {
             in_meeting_ = false;
             ui->video_capture->setEnabled(true);
+            ui->btn_audio_preview->setEnabled(true);
             ui->btn_join->setEnabled(true);
             ui->status_label->setText(QString::fromUtf8("状态: left"));
             clear_remote_preview();
@@ -577,4 +671,16 @@ void Widget::render_remote_preview_frame() {
     remote_item_->setPixmap(QPixmap::fromImage(image));
     remote_scene_->setSceneRect(remote_item_->boundingRect());
     ui->remote_display->fitInView(remote_item_, Qt::KeepAspectRatio);
+}
+
+void Widget::on_audio_level(xrtc::IXRtcMediaSource* /*audio_source*/,
+                            int level) {
+    QMetaObject::invokeMethod(
+        this,
+        [this, level]() {
+            if (ui && ui->mic_level_bar) {
+                ui->mic_level_bar->setValue(std::clamp(level, 0, 100));
+            }
+        },
+        Qt::QueuedConnection);
 }

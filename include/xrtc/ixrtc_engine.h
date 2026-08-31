@@ -49,6 +49,12 @@ public:
     // 远端视频帧；实现侧应尽快返回，并自行切到 UI 线程渲染
     virtual void on_remote_video_frame(uint64_t feed_id,
                                        const XRTCVideoFrame& frame) {}
+
+    /// 本地麦克风音量 0~100（自采 AudioCapture）；尽快返回并切 UI 线程
+    virtual void on_audio_level(IXRtcMediaSource* audio_source, int level) {
+        (void)audio_source;
+        (void)level;
+    }
 };
 
 class IXRtcEngine {
@@ -77,6 +83,11 @@ public:
     virtual IXRtcMediaSource* create_video_source(
         const ixrtc_video_config& video_config) = 0;
     virtual void destroy_video_source(IXRtcMediaSource* video_source) = 0;
+
+    /// 创建本地音频采集源（WebRTC ADM + 旁路音量）；勿与 join 同时开同一 ADM
+    virtual IXRtcMediaSource* create_audio_source(
+        const ixrtc_audio_config& audio_config) = 0;
+    virtual void destroy_audio_source(IXRtcMediaSource* audio_source) = 0;
 
     /// 加入 Janus VideoRoom（自动采集并推流）；异步，结果走 on_join_result
     virtual void join(const XRTCJoinConfig& config) = 0;

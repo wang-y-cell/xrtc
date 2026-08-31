@@ -123,6 +123,8 @@ add_library(xrtc STATIC
     src/media/video_track_source.cpp
     src/media/remote_video_sink.cpp
     src/media/vcm_capture.cpp
+    src/media/audio_capture.cpp
+    src/media/xrtc_audio_device_module.cpp
     src/media/video_capability_selector.cpp
     src/session/call_session.cpp
     src/janus/websocket_transport.cpp

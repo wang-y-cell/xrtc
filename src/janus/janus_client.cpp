@@ -335,10 +335,16 @@ utils::slots_t<> JanusClient::on_ws_message(const std::string& text) {
     const std::string janus = msg.value("janus", "");
     spdlog::info("[janus] message type={}", janus);
     if (janus == "success") { //如果服务端发送的消息是成功响应，则调用handle_success处理
+        //创建 Session
+        //挂载 VideoRoom 插件
+        //动态创建 VideoRoom
         handle_success(msg);
     } else if (janus == "event") {
+        //以发布者身份进房
+        //有人开始推流,退出,房间出错,都会进入这里
         handle_event(msg);
     } else if (janus == "trickle") {
+        //ICE 候选交换
         handle_trickle(msg);
     } else if (janus == "hangup") {
         const std::string reason = msg.value("reason", "hangup");

@@ -116,6 +116,115 @@ std::vector<XRTCDeviceInfo> AudioCapture::get_audio_device_info(
     return out;
 }
 
+std::vector<XRTCDeviceInfo> AudioCapture::get_playout_device_info(
+    webrtc::scoped_refptr<webrtc::AudioDeviceModule> platform_adm) {
+    std::vector<XRTCDeviceInfo> out;
+    if (!platform_adm) {
+        return out;
+    }
+    if (platform_adm->Init() != 0) {
+        spdlog::error("[audio-cap] platform ADM Init failed while listing playout");
+    }
+    const int16_t total = platform_adm->PlayoutDevices();
+    if (total <= 0) {
+        return out;
+    }
+    const int count = (total > 32) ? 0 : static_cast<int>(total);
+    char id[webrtc::kAdmMaxGuidSize];
+    char name[webrtc::kAdmMaxDeviceNameSize];
+    for (int i = 0; i < count; ++i) {
+        id[0] = '\0';
+        name[0] = '\0';
+        if (platform_adm->PlayoutDeviceName(static_cast<uint16_t>(i), name,
+                                            id) != 0) {
+            continue;
+        }
+        XRTCDeviceInfo info;
+        info.device_name = name;
+        info.device_id = id;
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
+bool AudioCapture::set_playout_device(
+    webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm,
+    const std::string& device_id) {
+    if (!adm) {
+        return false;
+    }
+    auto* worker = AdmWorker();
+    auto run = [adm, device_id]() -> bool {
+        if (adm->Init() != 0) {
+            spdlog::error("[audio-cap] ADM Init failed in set_playout_device");
+            return false;
+        }
+        const int16_t total = adm->PlayoutDevices();
+        if (total <= 0) {
+            spdlog::error("[audio-cap] no playout devices");
+            return false;
+        }
+        const int count = (total > 32) ? 0 : static_cast<int>(total);
+        if (count <= 0) {
+            return false;
+        }
+
+        int index = 0;
+        if (!device_id.empty()) {
+            index = -1;
+            char id[webrtc::kAdmMaxGuidSize];
+            char name[webrtc::kAdmMaxDeviceNameSize];
+            for (int i = 0; i < count; ++i) {
+                id[0] = '\0';
+                name[0] = '\0';
+                if (adm->PlayoutDeviceName(static_cast<uint16_t>(i), name, id) !=
+                    0) {
+                    continue;
+                }
+                if (device_id == id || device_id == name) {
+                    index = i;
+                    break;
+                }
+            }
+            if (index < 0) {
+                spdlog::error("[audio-cap] playout device not found: {}",
+                              device_id);
+                return false;
+            }
+        }
+
+        const bool was_playing = adm->Playing();
+        if (was_playing) {
+            adm->StopPlayout();
+        }
+        if (adm->SetPlayoutDevice(static_cast<uint16_t>(index)) != 0) {
+            spdlog::error("[audio-cap] SetPlayoutDevice({}) failed", index);
+            return false;
+        }
+        if (adm->InitSpeaker() != 0) {
+            spdlog::warn("[audio-cap] InitSpeaker failed after SetPlayoutDevice");
+        }
+        if (was_playing) {
+            if (adm->InitPlayout() != 0) {
+                spdlog::error("[audio-cap] InitPlayout failed after device switch");
+                return false;
+            }
+            if (adm->StartPlayout() != 0) {
+                spdlog::error("[audio-cap] StartPlayout failed after device switch");
+                return false;
+            }
+        }
+        spdlog::info("[audio-cap] playout device index={} id={}", index,
+                     device_id.empty() ? "(default/first)" : device_id);
+        return true;
+    };
+
+    if (worker && webrtc::Thread::Current() != worker) {
+        return worker->BlockingCall(run);
+    }
+    return run();
+}
+
 bool AudioCapture::ensure_init() {
     if (!adm_) {
         return false;

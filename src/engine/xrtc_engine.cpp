@@ -109,6 +109,26 @@ std::vector<XRTCDeviceInfo> XRtcEngine::get_audio_device_info() {
         });
 }
 
+std::vector<XRTCDeviceInfo> XRtcEngine::get_playout_device_info() {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [this]() -> std::vector<XRTCDeviceInfo> {
+            return AudioCapture::get_playout_device_info(
+                audio_device_ ? audio_device_->platform() : nullptr);
+        });
+}
+
+bool XRtcEngine::set_playout_device(const std::string& device_id) {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [this, device_id]() -> bool {
+            // 保证 factory/worker 已就绪，再在 worker 上切播放设备
+            if (!XRtcGlobal::instance().GetOrCreatePeerConnectionFactory()) {
+                spdlog::error("[engine] set_playout_device: no PC factory");
+                return false;
+            }
+            return AudioCapture::set_playout_device(audio_device_, device_id);
+        });
+}
+
 std::vector<XRTCVideoFormat> XRtcEngine::get_video_capabilities(
     const std::string& device_id) {
     return XRtcGlobal::instance().api_thread()->BlockingCall(
@@ -211,14 +231,23 @@ void XRtcEngine::join(const XRTCJoinConfig& config) {
             cfg.audio_device_id = devices.front().device_id;
         }
     }
+    // 进房前切好扬声器（仅当配置了 playout_device_id）
+    if (!cfg.playout_device_id.empty()) {
+        if (!set_playout_device(cfg.playout_device_id)) {
+            spdlog::warn("[engine] join: set_playout_device failed id={}",
+                         cfg.playout_device_id);
+        }
+    }
     //如果名称为空,使用默认名称
     if (cfg.display_name.empty()) {
         cfg.display_name = "xrtc-user";
     }
 
-    spdlog::info("[engine] join post Start url={} room={} cam={} mic={}",
-                 cfg.janus_ws_url, cfg.room_id, cfg.video_device_id,
-                 cfg.audio_device_id);
+    spdlog::info(
+        "[engine] join post Start url={} room={} cam={} mic={} speaker={}",
+        cfg.janus_ws_url, cfg.room_id, cfg.video_device_id, cfg.audio_device_id,
+        cfg.playout_device_id.empty() ? "(system default)"
+                                      : cfg.playout_device_id);
     //异步调用Start()
     XRtcGlobal::instance().api_thread()->PostTask([this, cfg]() {
         if (!call_session_) {

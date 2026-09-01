@@ -70,6 +70,8 @@ struct XRTCJoinConfig {
     std::string admin_key;         /// Janus VideoRoom admin_key（服务端要求时填写）
     std::string video_device_id; /// 为空则用第一个摄像头
     std::string audio_device_id; /// 为空则用第一个麦克风（WebRTC ADM 经 AudioCapture）
+    /// 远端音频播放设备；为空则用系统默认 / 列表第一项
+    std::string playout_device_id;
     int width = 0;   /// 0 表示使用 engine 当前采集请求
     int height = 0;
     int fps = 0;

@@ -6,6 +6,8 @@
 #include <QPixmap>
 #include <QResizeEvent>
 #include <QString>
+#include <QSizePolicy>
+#include <QVBoxLayout>
 
 #include <algorithm>
 
@@ -145,6 +147,8 @@ void Widget::init_connection() {
             &Widget::toggle_meeting_video);
     connect(ui->btn_meeting_audio, &QPushButton::clicked, this,
             &Widget::toggle_meeting_audio);
+    connect(ui->speaker_list, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &Widget::on_speaker_changed);
     connect(ui->video_width, qOverload<int>(&QSpinBox::valueChanged), this,
             &Widget::on_video_request_changed);
     connect(ui->video_height, qOverload<int>(&QSpinBox::valueChanged), this,
@@ -158,20 +162,14 @@ void Widget::init_connection() {
 }
 
 /**
- * @brief 初始化预览窗口界面
- * 为本地预览和远端预览分别创建 QGraphicsScene 和
- * 一个空的 QGraphicsPixmapItem，后续把视频帧设置到 Item 上即可显示。
+ * @brief 初始化本地预览窗口
+ * 远端窗口在用户加入时按 feed_id 动态创建。
  */
 void Widget::init_preview() {
     preview_scene_ = new QGraphicsScene(this);
     ui->display->setScene(preview_scene_);
     ui->display->setRenderHint(QPainter::SmoothPixmapTransform);
     preview_item_ = preview_scene_->addPixmap(QPixmap());
-
-    remote_scene_ = new QGraphicsScene(this);
-    ui->remote_display->setScene(remote_scene_);
-    ui->remote_display->setRenderHint(QPainter::SmoothPixmapTransform);
-    remote_item_ = remote_scene_->addPixmap(QPixmap());
 }
 
 /**
@@ -190,18 +188,97 @@ void Widget::clear_preview() {
 }
 
 /**
- * @brief 清空远端预览
- * 加锁清掉待渲染帧，并清空画面上的图像。
+ * @brief 确保指定 feed 的远端窗口存在（UI 线程）
+ * 新用户加入时在底部横向追加一个窗口；已存在则更新显示名。
  */
-void Widget::clear_remote_preview() {
+void Widget::ensure_remote_view(uint64_t feed_id, const QString& display) {
+    auto it = remote_views_.find(feed_id);
+    if (it != remote_views_.end()) {
+        if (!display.isEmpty() && it->second.name_label) {
+            it->second.display = display;
+            it->second.name_label->setText(display);
+        }
+        return;
+    }
+
+    const QString title =
+        display.isEmpty() ? QString("feed %1").arg(feed_id) : display;
+
+    auto* container = new QWidget();
+    container->setMinimumWidth(240);
+    container->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+
+    auto* layout = new QVBoxLayout(container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+
+    auto* name = new QLabel(title);
+    name->setAlignment(Qt::AlignCenter);
+    name->setWordWrap(true);
+
+    auto* view = new QGraphicsView();
+    view->setMinimumSize(220, 140);
+    view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    view->setRenderHint(QPainter::SmoothPixmapTransform);
+    auto* scene = new QGraphicsScene(container);
+    view->setScene(scene);
+    auto* item = scene->addPixmap(QPixmap());
+
+    layout->addWidget(name);
+    layout->addWidget(view, 1);
+
+    // 插在末尾 spacer 之前，保证窗口横向排列、右侧仍可留白
+    const int insert_at =
+        std::max(0, ui->remote_layout->count() - 1);
+    ui->remote_layout->insertWidget(insert_at, container, 1);
+
+    RemoteViewUi remote;
+    remote.container = container;
+    remote.name_label = name;
+    remote.view = view;
+    remote.scene = scene;
+    remote.item = item;
+    remote.display = title;
+    remote_views_[feed_id] = remote;
+}
+
+/**
+ * @brief 移除指定 feed 的远端窗口（UI 线程）
+ */
+void Widget::remove_remote_view(uint64_t feed_id) {
     {
         std::lock_guard<std::mutex> lock(remote_mutex_);
-        pending_remote_ = QImage();
-        remote_scheduled_ = false;
+        remote_pending_.erase(feed_id);
     }
-    if (remote_item_) {
-        remote_item_->setPixmap(QPixmap());
+
+    auto it = remote_views_.find(feed_id);
+    if (it == remote_views_.end()) {
+        return;
     }
+    if (it->second.container) {
+        ui->remote_layout->removeWidget(it->second.container);
+        it->second.container->deleteLater();
+    }
+    remote_views_.erase(it);
+}
+
+/**
+ * @brief 清空全部远端预览窗口
+ */
+void Widget::clear_all_remote_views() {
+    {
+        std::lock_guard<std::mutex> lock(remote_mutex_);
+        remote_pending_.clear();
+    }
+
+    for (auto& [feed_id, remote] : remote_views_) {
+        (void)feed_id;
+        if (remote.container) {
+            ui->remote_layout->removeWidget(remote.container);
+            remote.container->deleteLater();
+        }
+    }
+    remote_views_.clear();
 }
 
 /**
@@ -218,6 +295,25 @@ void Widget::init_device_list() {
     for (const auto& device : audio_devices_) {
         ui->audio_list->addItem(QString::fromUtf8(device.device_name.c_str()));
     }
+
+    playout_devices_ = engine->get_playout_device_info();
+    for (const auto& device : playout_devices_) {
+        ui->speaker_list->addItem(QString::fromUtf8(device.device_name.c_str()));
+    }
+}
+
+void Widget::on_speaker_changed(int index) {
+    if (!engine || index < 0 ||
+        index >= static_cast<int>(playout_devices_.size())) {
+        return;
+    }
+    if (!engine->set_playout_device(playout_devices_[index].device_id)) {
+        ui->status_label->setText(QString::fromUtf8("状态: 切换扬声器失败"));
+        return;
+    }
+    ui->status_label->setText(
+        QString::fromUtf8("状态: 扬声器已切换为 %1")
+            .arg(QString::fromUtf8(playout_devices_[index].device_name.c_str())));
 }
 
 /**
@@ -252,8 +348,11 @@ void Widget::resizeEvent(QResizeEvent* event) {
     if (preview_item_ && !preview_item_->pixmap().isNull()) {
         ui->display->fitInView(preview_item_, Qt::KeepAspectRatio);
     }
-    if (remote_item_ && !remote_item_->pixmap().isNull()) {
-        ui->remote_display->fitInView(remote_item_, Qt::KeepAspectRatio);
+    for (auto& [feed_id, remote] : remote_views_) {
+        (void)feed_id;
+        if (remote.item && remote.view && !remote.item->pixmap().isNull()) {
+            remote.view->fitInView(remote.item, Qt::KeepAspectRatio);
+        }
     }
 }
 
@@ -399,6 +498,11 @@ void Widget::join_meeting() {
         audio_index < static_cast<int>(audio_devices_.size())) {
         config.audio_device_id = audio_devices_[audio_index].device_id;
     }
+    const int speaker_index = ui->speaker_list->currentIndex();
+    if (speaker_index >= 0 &&
+        speaker_index < static_cast<int>(playout_devices_.size())) {
+        config.playout_device_id = playout_devices_[speaker_index].device_id;
+    }
     engine->set_video_capture_request(current_video_request());
 
     // 本机 coturn（勿留空，否则会退回 Google STUN）
@@ -418,6 +522,7 @@ void Widget::join_meeting() {
                  config.audio_device_id);
     ui->status_label->setText(QString::fromUtf8("状态: joining..."));
     ui->btn_join->setEnabled(false);
+    clear_all_remote_views();
     engine->join(config);
 }
 
@@ -427,7 +532,7 @@ void Widget::join_meeting() {
  */
 void Widget::leave_meeting() {
     engine->leave();
-    clear_remote_preview();
+    clear_all_remote_views();
     in_meeting_ = false;
     meeting_video_on_ = false;
     meeting_audio_on_ = false;
@@ -650,7 +755,7 @@ void Widget::on_leave(xrtc::XRtcError) {
             ui->btn_audio_preview->setEnabled(true);
             ui->btn_join->setEnabled(true);
             ui->status_label->setText(QString::fromUtf8("状态: left"));
-            clear_remote_preview();
+            clear_all_remote_views();
         },
         Qt::QueuedConnection);
 }
@@ -671,41 +776,45 @@ void Widget::on_connection_state(xrtc::XRTCConnectionState state) {
 
 /**
  * @brief 回调：远端用户加入
- * 切回 UI 线程，在状态栏显示远端用户信息。
+ * 切回 UI 线程：在底部横向追加窗口，并更新状态栏。
  */
 void Widget::on_remote_user_joined(const xrtc::XRTCRemoteUser& user) {
     QMetaObject::invokeMethod(
         this,
         [this, user]() {
+            const QString display = QString::fromStdString(user.display);
+            ensure_remote_view(user.feed_id, display);
             ui->status_label->setText(
-                QString("状态: remote joined feed=%1 %2")
+                QString("状态: remote joined feed=%1 %2 (共%3人)")
                     .arg(user.feed_id)
-                    .arg(QString::fromStdString(user.display)));
+                    .arg(display)
+                    .arg(remote_views_.size()));
         },
         Qt::QueuedConnection);
 }
 
 /**
  * @brief 回调：远端用户离开
- * 切回 UI 线程，更新状态栏并清空远端画面。
+ * 切回 UI 线程：移除对应窗口并更新状态栏。
  */
 void Widget::on_remote_user_left(const xrtc::XRTCRemoteUser& user) {
     QMetaObject::invokeMethod(
         this,
         [this, user]() {
+            remove_remote_view(user.feed_id);
             ui->status_label->setText(
-                QString("状态: remote left feed=%1").arg(user.feed_id));
-            clear_remote_preview();
+                QString("状态: remote left feed=%1 (剩余%2人)")
+                    .arg(user.feed_id)
+                    .arg(remote_views_.size()));
         },
         Qt::QueuedConnection);
 }
 
 /**
  * @brief 回调：远端视频帧到达（可能来自非 UI 线程）
- * 与 on_video_frame 类似：拷贝一帧图像放入待渲染队列，
- * 并调度一次 render_remote_preview_frame 在 UI 线程渲染。
+ * 按 feed_id 分别缓存待渲染帧，并调度 UI 线程渲染对应窗口。
  */
-void Widget::on_remote_video_frame(uint64_t /*feed_id*/,
+void Widget::on_remote_video_frame(uint64_t feed_id,
                                    const xrtc::XRTCVideoFrame& frame) {
     if (!frame.argb || frame.width <= 0 || frame.height <= 0) {
         return;
@@ -718,37 +827,50 @@ void Widget::on_remote_video_frame(uint64_t /*feed_id*/,
     bool schedule = false;
     {
         std::lock_guard<std::mutex> lock(remote_mutex_);
-        pending_remote_ = std::move(copied);
-        if (!remote_scheduled_) {
-            remote_scheduled_ = true;
+        auto& pending = remote_pending_[feed_id];
+        pending.image = std::move(copied);
+        if (!pending.scheduled) {
+            pending.scheduled = true;
             schedule = true;
         }
     }
 
     if (schedule) {
         QMetaObject::invokeMethod(
-            this, [this]() { render_remote_preview_frame(); },
+            this,
+            [this, feed_id]() {
+                // 帧可能先于 joined 回调到达，补建窗口
+                ensure_remote_view(feed_id, QString());
+                render_remote_preview_frame(feed_id);
+            },
             Qt::QueuedConnection);
     }
 }
 
 /**
- * @brief 在 UI 线程渲染远端预览帧
- * 取出待渲染图像并设置到 pixmap item 上，同时让画面自适应显示区域。
+ * @brief 在 UI 线程渲染指定 feed 的远端预览帧
  */
-void Widget::render_remote_preview_frame() {
+void Widget::render_remote_preview_frame(uint64_t feed_id) {
     QImage image;
     {
         std::lock_guard<std::mutex> lock(remote_mutex_);
-        image = std::move(pending_remote_);
-        remote_scheduled_ = false;
+        auto it = remote_pending_.find(feed_id);
+        if (it == remote_pending_.end()) {
+            return;
+        }
+        image = std::move(it->second.image);
+        it->second.scheduled = false;
     }
-    if (image.isNull() || !remote_item_) {
+
+    auto vit = remote_views_.find(feed_id);
+    if (image.isNull() || vit == remote_views_.end() || !vit->second.item ||
+        !vit->second.view || !vit->second.scene) {
         return;
     }
-    remote_item_->setPixmap(QPixmap::fromImage(image));
-    remote_scene_->setSceneRect(remote_item_->boundingRect());
-    ui->remote_display->fitInView(remote_item_, Qt::KeepAspectRatio);
+
+    vit->second.item->setPixmap(QPixmap::fromImage(image));
+    vit->second.scene->setSceneRect(vit->second.item->boundingRect());
+    vit->second.view->fitInView(vit->second.item, Qt::KeepAspectRatio);
 }
 
 void Widget::on_audio_level(xrtc::IXRtcMediaSource* /*audio_source*/,

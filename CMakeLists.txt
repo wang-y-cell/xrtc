@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_TYPE Debug)
 
+
+# set(BUILD_XRTC_DEMO ON)
+# set(Boost_ROOT "F:/wy/boost_install" CACHE PATH "Path to Boost top-level directory")
+# set(QT6_ROOT "F:/Qt/6.8.3/msvc2022_64" CACHE PATH "Path to Qt top-level directory")
+
 # WebRTC 预编译 SDK
 # 布局：webrtc/include + webrtc/lib_debug/webrtc.lib + webrtc/lib_release/webrtc.lib
 # 缺失时从 GitHub Release 自动下载 webrtc.7z

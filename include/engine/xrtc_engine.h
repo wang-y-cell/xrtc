@@ -18,6 +18,8 @@ public:
 
     std::vector<XRTCDeviceInfo> get_video_device_info() override;
     std::vector<XRTCDeviceInfo> get_audio_device_info() override;
+    std::vector<XRTCDeviceInfo> get_playout_device_info() override;
+    bool set_playout_device(const std::string& device_id) override;
 
     std::vector<XRTCVideoFormat> get_video_capabilities(
         const std::string& device_id) override;

@@ -24,6 +24,15 @@ public:
     static std::vector<XRTCDeviceInfo> get_audio_device_info(
         webrtc::scoped_refptr<webrtc::AudioDeviceModule> platform_adm);
 
+    /// 枚举扬声器（PlayoutDevices）
+    static std::vector<XRTCDeviceInfo> get_playout_device_info(
+        webrtc::scoped_refptr<webrtc::AudioDeviceModule> platform_adm);
+
+    /// 切换播放设备（须最终在 worker 执行；已播放时会 Stop→Set→Init→Start）
+    static bool set_playout_device(
+        webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm,
+        const std::string& device_id);
+
     ~AudioCapture() override;
 
     AudioCapture(const AudioCapture&) = delete;

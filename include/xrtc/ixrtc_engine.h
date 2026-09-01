@@ -62,6 +62,10 @@ public:
     virtual ~IXRtcEngine() = default;
     virtual std::vector<XRTCDeviceInfo> get_video_device_info() = 0;
     virtual std::vector<XRTCDeviceInfo> get_audio_device_info() = 0;
+    /// 枚举扬声器 / 播放设备（与麦克风列表分开）
+    virtual std::vector<XRTCDeviceInfo> get_playout_device_info() = 0;
+    /// 选择远端音频播放设备；空 id 表示默认。可在进房前或会议中调用
+    virtual bool set_playout_device(const std::string& device_id) = 0;
 
     /// 枚举摄像头支持的采集格式（可能含重复分辨率、不同 pixel format）
     virtual std::vector<XRTCVideoFormat> get_video_capabilities(

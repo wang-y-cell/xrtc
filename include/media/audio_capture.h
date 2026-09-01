@@ -32,10 +32,13 @@ public:
     /// 选麦 + 挂音量旁路, 不采集
     bool open();
 
-    /// open + 若尚未录音则,启动录音
+    /// open + 若尚未录音则启动录音（预览 / 会议手动开麦）
     bool start() override;
     bool stop() override;
     bool device_switch(const std::string& device_id) override;
+
+    /// 强制停硬件录音（含 WebRTC 已启录的情况）；保持 open/旁路
+    bool StopHardwareRecording();
 
     /// 由 XrtcAudioDeviceModule::RecordedDataIsAvailable 旁路调用
     /// 这个就是从 ADM 获取到的音频数据，然后进行音量计算

@@ -47,10 +47,14 @@ Widget::Widget(QWidget* parent)
       engine(xrtc::create_xrtc_engine(this)) {
     ui->setupUi(this);
     ui->video_capture->setStyleSheet(btnStart);
+    ui->btn_audio_preview->setStyleSheet(btnStart);
+    ui->btn_meeting_video->setStyleSheet(btnStart);
+    ui->btn_meeting_audio->setStyleSheet(btnStart);
     init_preview();
     init_connection();
     init_device_list();
     on_video_request_changed();
+    set_meeting_media_buttons(false);
 }
 
 xrtc::XRTCVideoCaptureRequest Widget::current_video_request() const {
@@ -137,6 +141,10 @@ void Widget::init_connection() {
             &Widget::start_audio_source);
     connect(ui->btn_join, &QPushButton::clicked, this, &Widget::join_meeting);
     connect(ui->btn_leave, &QPushButton::clicked, this, &Widget::leave_meeting);
+    connect(ui->btn_meeting_video, &QPushButton::clicked, this,
+            &Widget::toggle_meeting_video);
+    connect(ui->btn_meeting_audio, &QPushButton::clicked, this,
+            &Widget::toggle_meeting_audio);
     connect(ui->video_width, qOverload<int>(&QSpinBox::valueChanged), this,
             &Widget::on_video_request_changed);
     connect(ui->video_height, qOverload<int>(&QSpinBox::valueChanged), this,
@@ -332,12 +340,14 @@ void Widget::start_audio_source() {
             ui->btn_audio_preview->setDisabled(false);
             return;
         }
+        ui->btn_audio_preview->setStyleSheet(btnStop);
         ui->btn_audio_preview->setText(QString::fromUtf8("停止麦克风预览"));
     } else {
         audio_source->stop();
         engine->destroy_audio_source(audio_source);
         audio_source = nullptr;
         ui->mic_level_bar->setValue(0);
+        ui->btn_audio_preview->setStyleSheet(btnStart);
         ui->btn_audio_preview->setText(QString::fromUtf8("开启麦克风预览"));
     }
     ui->btn_audio_preview->setDisabled(false);
@@ -419,10 +429,66 @@ void Widget::leave_meeting() {
     engine->leave();
     clear_remote_preview();
     in_meeting_ = false;
+    meeting_video_on_ = false;
+    meeting_audio_on_ = false;
+    set_meeting_media_buttons(false);
+    reset_meeting_media_button_labels();
     ui->video_capture->setEnabled(true);
     ui->btn_audio_preview->setEnabled(true);
     ui->btn_join->setEnabled(true);
     ui->status_label->setText(QString::fromUtf8("状态: left"));
+}
+
+void Widget::set_meeting_media_buttons(bool in_meeting) {
+    ui->btn_meeting_video->setEnabled(in_meeting);
+    ui->btn_meeting_audio->setEnabled(in_meeting);
+}
+
+void Widget::reset_meeting_media_button_labels() {
+    ui->btn_meeting_video->setStyleSheet(btnStart);
+    ui->btn_meeting_video->setText(QString::fromUtf8("会议：开启摄像头"));
+    ui->btn_meeting_audio->setStyleSheet(btnStart);
+    ui->btn_meeting_audio->setText(QString::fromUtf8("会议：开启麦克风"));
+}
+
+void Widget::toggle_meeting_video() {
+    if (!in_meeting_ || !engine) {
+        return;
+    }
+    if (!meeting_video_on_) {
+        engine->start_local_video();
+        meeting_video_on_ = true;
+        ui->btn_meeting_video->setStyleSheet(btnStop);
+        ui->btn_meeting_video->setText(QString::fromUtf8("会议：关闭摄像头"));
+        ui->status_label->setText(QString::fromUtf8("状态: 摄像头已开"));
+    } else {
+        engine->stop_local_video();
+        meeting_video_on_ = false;
+        clear_preview();
+        ui->btn_meeting_video->setStyleSheet(btnStart);
+        ui->btn_meeting_video->setText(QString::fromUtf8("会议：开启摄像头"));
+        ui->status_label->setText(QString::fromUtf8("状态: 摄像头已关"));
+    }
+}
+
+void Widget::toggle_meeting_audio() {
+    if (!in_meeting_ || !engine) {
+        return;
+    }
+    if (!meeting_audio_on_) {
+        engine->start_local_audio();
+        meeting_audio_on_ = true;
+        ui->btn_meeting_audio->setStyleSheet(btnStop);
+        ui->btn_meeting_audio->setText(QString::fromUtf8("会议：关闭麦克风"));
+        ui->status_label->setText(QString::fromUtf8("状态: 麦克风已开"));
+    } else {
+        engine->stop_local_audio();
+        meeting_audio_on_ = false;
+        ui->btn_meeting_audio->setStyleSheet(btnStart);
+        ui->btn_meeting_audio->setText(QString::fromUtf8("会议：开启麦克风"));
+        ui->mic_level_bar->setValue(0);
+        ui->status_label->setText(QString::fromUtf8("状态: 麦克风已关"));
+    }
 }
 
 /**
@@ -539,13 +605,21 @@ void Widget::on_join_result(xrtc::XRtcError error, const std::string& message) {
             ui->btn_join->setEnabled(error != xrtc::XRtcError::kNOERROR);
             if (error == xrtc::XRtcError::kNOERROR) {
                 in_meeting_ = true;
+                meeting_video_on_ = false;
+                meeting_audio_on_ = false;
                 ui->video_capture->setEnabled(false);
                 ui->btn_audio_preview->setEnabled(false);
+                set_meeting_media_buttons(true);
+                reset_meeting_media_button_labels();
                 ui->status_label->setText(
-                    QString::fromUtf8("状态: joined - %1")
+                    QString::fromUtf8("状态: joined - %1（请手动开摄像头/麦克风）")
                         .arg(QString::fromStdString(message)));
             } else {
                 in_meeting_ = false;
+                meeting_video_on_ = false;
+                meeting_audio_on_ = false;
+                set_meeting_media_buttons(false);
+                reset_meeting_media_button_labels();
                 ui->video_capture->setEnabled(true);
                 ui->btn_audio_preview->setEnabled(true);
                 ui->status_label->setText(
@@ -568,6 +642,10 @@ void Widget::on_leave(xrtc::XRtcError) {
         this,
         [this]() {
             in_meeting_ = false;
+            meeting_video_on_ = false;
+            meeting_audio_on_ = false;
+            set_meeting_media_buttons(false);
+            reset_meeting_media_button_labels();
             ui->video_capture->setEnabled(true);
             ui->btn_audio_preview->setEnabled(true);
             ui->btn_join->setEnabled(true);
@@ -678,9 +756,15 @@ void Widget::on_audio_level(xrtc::IXRtcMediaSource* /*audio_source*/,
     QMetaObject::invokeMethod(
         this,
         [this, level]() {
-            if (ui && ui->mic_level_bar) {
-                ui->mic_level_bar->setValue(std::clamp(level, 0, 100));
+            if (!ui || !ui->mic_level_bar) {
+                return;
             }
+            int v = level;
+            // 预览仅测试用：放大显示；会议内保持 SDK 原始 level
+            if (audio_source && !in_meeting_) {
+                v = level * 2;
+            }
+            ui->mic_level_bar->setValue(std::clamp(v, 0, 100));
         },
         Qt::QueuedConnection);
 }

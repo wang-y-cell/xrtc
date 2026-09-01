@@ -89,13 +89,23 @@ public:
         const ixrtc_audio_config& audio_config) = 0;
     virtual void destroy_audio_source(IXRtcMediaSource* audio_source) = 0;
 
-    /// 加入 Janus VideoRoom（自动采集并推流）；异步，结果走 on_join_result
+    /// 加入 Janus VideoRoom（准备轨与采集器，默认不开采不推流）；异步，结果走 on_join_result
     virtual void join(const XRTCJoinConfig& config) = 0;
     /// 离开房间并释放通话资源
     virtual void leave() = 0;
 
+    /// 仅控制是否推流（轨 enable）；不影响硬件采集
     virtual void mute_audio(bool mute) = 0;
     virtual void mute_video(bool mute) = 0;
+
+    /// 会议内：开采集并开始推流
+    virtual void start_local_video() = 0;
+    /// 会议内：停推流并停采集
+    virtual void stop_local_video() = 0;
+    /// 会议内：开麦采集并开始推流
+    virtual void start_local_audio() = 0;
+    /// 会议内：停推流并停硬件录音
+    virtual void stop_local_audio() = 0;
 };
 
 IXRtcEngine* create_xrtc_engine(XRtcEngineObserver* observer);

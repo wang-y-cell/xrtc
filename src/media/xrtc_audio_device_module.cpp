@@ -24,6 +24,27 @@ void XrtcAudioDeviceModule::SetCaptureListener(AudioCapture* listener) {
     tap_->listener = listener;
 }
 
+void XrtcAudioDeviceModule::SetCaptureEnabled(bool enabled) {
+    capture_enabled_.store(enabled);
+    if (!enabled) {
+        if (platform_ && platform_->Recording()) {
+            platform_->StopRecording();
+        }
+        return;
+    }
+    // 开麦：补上此前被吞掉的 WebRTC StartRecording
+    if (pending_start_.load() && platform_ && !platform_->Recording()) {
+        EnsurePlatformAudioCallback();
+        const int32_t r = platform_->StartRecording();
+        if (r == 0) {
+            pending_start_.store(false);
+            spdlog::info("[xrtc-adm] pending StartRecording applied");
+        } else {
+            spdlog::error("[xrtc-adm] pending StartRecording failed: {}", r);
+        }
+    }
+}
+
 int32_t XrtcAudioDeviceModule::EnsurePlatformAudioCallback() {
     // 已安装则跳过；录音中再次 Register 会失败（AudioDeviceBuffer 限制）
     if (platform_callback_installed_) {
@@ -159,6 +180,14 @@ bool XrtcAudioDeviceModule::Playing() const {
 }
 
 int32_t XrtcAudioDeviceModule::StartRecording() {
+    //跳过webrtc开启轨道的时候自动采集
+    if (!capture_enabled_.load()) {
+        pending_start_.store(true);
+        spdlog::info(
+            "[xrtc-adm] StartRecording suppressed (capture disabled)");
+        return 0;
+    }
+    pending_start_.store(false);
     // 预览路径：CreatePeerConnectionFactory 不一定立刻 Init VoiceEngine，
     // 不注册 AudioTransport 时 StartRecording 会亮麦但丢弃 PCM。
     EnsurePlatformAudioCallback();
@@ -170,6 +199,7 @@ int32_t XrtcAudioDeviceModule::StartRecording() {
 }
 
 int32_t XrtcAudioDeviceModule::StopRecording() {
+    pending_start_.store(false);
     return platform_->StopRecording();
 }
 

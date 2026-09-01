@@ -37,12 +37,20 @@ public:
     ///@brief 停止通话,包括关闭Publisher/Subscriber PeerConnection,断开janus服务器
     void Stop();
 
-    ///@brief 静音音频
-    ///@param mute 是否静音
+    ///@brief 静音音频（仅控制推流轨 enable，不管硬件采集）
     void MuteAudio(bool mute);
-    ///@brief 静音视频
-    ///@param mute 是否静音
+    ///@brief 静音视频（仅控制推流轨 enable，不管硬件采集）
     void MuteVideo(bool mute);
+
+    /// 仅开启/停止本地视频硬件采集（不含 mute）
+    bool StartLocalVideo();
+    bool StopLocalVideo();
+    /// 仅开启/停止本地音频硬件录音（不含 mute）
+    bool StartLocalAudio();
+    bool StopLocalAudio();
+
+    bool local_video_capturing() const { return local_video_capturing_; }
+    bool local_audio_capturing() const { return local_audio_capturing_; }
 
     ///@brief 获取通话状态
     bool active() const { return active_; }
@@ -64,9 +72,10 @@ private:
                                 int idx, const std::string& cand);
     slots_t<> onJanusError(const std::string& err);
     slots_t<> onJanusDestroyed();
-    ///在 Janus 进房成功后，把本地音视频采集和 WebRTC 轨道准备好，供后面的 createPublisherPc() 做 AddTrack 和 CreateOffer 推流
-    ///开启摄像头采集画面
+    ///在 Janus 进房成功后，准备本地轨与采集器（默认不开采，由 StartLocal* 手动开）
     XRtcStatus ensureLocalMedia();
+    /// 进房后默认禁推流，等待上层 start_local_*
+    void muteLocalTracks(bool mute);
     ///设置peerconnectionHandler回调函数,创建peerconnectionHandler对象,调用init函数创建peerconnection对象,并将视频轨道和音频轨道加入进去
     void createPublisherPc();
     ///通过远端的信息之后发送janus请求订阅对方
@@ -99,6 +108,8 @@ private:
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track_;
     ///视频轨道
     webrtc::scoped_refptr<webrtc::VideoTrackInterface> video_track_;
+    bool local_video_capturing_ = false;
+    bool local_audio_capturing_ = false;
 
     std::unique_ptr<PeerConnectionHandler> publisher_pc_;
     std::unordered_map<uint64_t, std::unique_ptr<PeerConnectionHandler>>

@@ -1,9 +1,15 @@
 ﻿#include <session/call_session.h>
 
 #include "api/audio_options.h"
+#include "api/video/i420_buffer.h"
+#include "api/video/video_frame.h"
+#include "rtc_base/time_utils.h"
 #include <engine/xrtc_global.h>
 #include <media/xrtc_audio_device_module.h>
 #include <spdlog/spdlog.h>
+#include <vector>
+
+#include "libyuv/convert_argb.h"
 
 namespace xrtc {
 
@@ -228,6 +234,8 @@ void CallSession::Stop() {
         audio_track_ = nullptr;
         video_track_ = nullptr;
         video_source_ = nullptr;
+        local_video_capturing_ = false;
+        local_audio_capturing_ = false;
         if (audio_capture_) {
             audio_capture_->stop();
             audio_capture_.reset();
@@ -269,6 +277,131 @@ void CallSession::MuteVideo(bool mute) {
     });
 }
 
+void CallSession::muteLocalTracks(bool mute) {
+    if (publisher_pc_) {
+        publisher_pc_->MuteAudio(mute);
+        publisher_pc_->MuteVideo(mute);
+    } else {
+        if (audio_track_) {
+            audio_track_->set_enabled(!mute);
+        }
+        if (video_track_) {
+            video_track_->set_enabled(!mute);
+        }
+    }
+}
+
+bool CallSession::StartLocalVideo() {
+    auto run = [this]() -> bool {
+        if (!capture_) {
+            spdlog::error("[session] StartLocalVideo: capture not ready");
+            return false;
+        }
+        if (!capture_->start()) {
+            spdlog::error("[session] StartLocalVideo: capture start failed");
+            return false;
+        }
+        local_video_capturing_ = true;
+        spdlog::info("[session] local video capture started");
+        return true;
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        return api->BlockingCall(run);
+    }
+    return run();
+}
+
+bool CallSession::StopLocalVideo() {
+    auto run = [this]() -> bool {
+        // 关采集前推一帧黑图，清本地预览并避免远端卡在最后一帧
+        if (video_source_) {
+            int w = config_.width > 0 ? config_.width : 640;
+            int h = config_.height > 0 ? config_.height : 480;
+            if (capture_) {
+                const auto fmt = capture_->capture_format();
+                if (fmt.width > 0) {
+                    w = fmt.width;
+                }
+                if (fmt.height > 0) {
+                    h = fmt.height;
+                }
+            }
+            auto buffer = webrtc::I420Buffer::Create(w, h);
+            webrtc::I420Buffer::SetBlack(buffer.get());
+            const webrtc::VideoFrame frame =
+                webrtc::VideoFrame::Builder()
+                    .set_video_frame_buffer(buffer)
+                    .set_timestamp_rtp(0)
+                    .set_timestamp_ms(webrtc::TimeMillis())
+                    .build();
+            video_source_->PushFrame(frame);
+
+            if (auto* obs = XRtcGlobal::instance().observer()) {
+                auto argb = std::make_shared<std::vector<uint8_t>>(
+                    static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+                libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(),
+                                   buffer->DataU(), buffer->StrideU(),
+                                   buffer->DataV(), buffer->StrideV(),
+                                   argb->data(), w * 4, w, h);
+                XRTCVideoFrame vf;
+                vf.width = w;
+                vf.height = h;
+                vf.argb = std::move(argb);
+                obs->on_video_frame(capture_.get(), vf);
+            }
+        }
+        if (capture_) {
+            capture_->stop();
+        }
+        local_video_capturing_ = false;
+        spdlog::info("[session] local video capture stopped");
+        return true;
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        return api->BlockingCall(run);
+    }
+    return run();
+}
+
+bool CallSession::StartLocalAudio() {
+    auto run = [this]() -> bool {
+        if (!audio_capture_) {
+            spdlog::error("[session] StartLocalAudio: audio_capture not ready");
+            return false;
+        }
+        if (!audio_capture_->start()) {
+            spdlog::error("[session] StartLocalAudio: start failed");
+            return false;
+        }
+        local_audio_capturing_ = true;
+        spdlog::info("[session] local audio capture started");
+        return true;
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        return api->BlockingCall(run);
+    }
+    return run();
+}
+
+bool CallSession::StopLocalAudio() {
+    auto run = [this]() -> bool {
+        if (audio_capture_) {
+            audio_capture_->StopHardwareRecording();
+        }
+        local_audio_capturing_ = false;
+        spdlog::info("[session] local audio capture stopped");
+        return true;
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        return api->BlockingCall(run);
+    }
+    return run();
+}
+
 void CallSession::notifyJoinResult(XRtcError error,
                                    const std::string& message) {
     if (join_notified_) {
@@ -297,23 +430,19 @@ XRtcStatus CallSession::ensureLocalMedia() {
         return xrtc_err(XRtcError::kInvalidParam);
     }
 
-    //创建并启动摄像头采集, 如果没有创建就创建
+    // 创建摄像头采集器（默认不 start，由 StartLocalVideo 手动开）
     if (!capture_) {
         capture_ = VcmCapture::Create(
             static_cast<size_t>(config_.width),
             static_cast<size_t>(config_.height), config_.fps,
             config_.video_device_id, config_.select_strategy);
-        //如果创建失败,返回错误
         if (!capture_) {
             return xrtc_err(XRtcError::kMediaStartFailed);
         }
-        //设置视频源
         capture_->set_track_source(video_source_);
-        //启动摄像头采集
-        capture_->start();
     }
 
-    // 选麦 + 挂音量旁路；不在此 StartRecording（避免抢在 AudioState 前于错误线程启录）
+    // 选麦 + 挂音量旁路；不在此 StartRecording
     if (!audio_capture_) {
         auto base = XRtcGlobal::instance().audio_device();
         auto* raw = static_cast<XrtcAudioDeviceModule*>(base.get());
@@ -333,18 +462,16 @@ XRtcStatus CallSession::ensureLocalMedia() {
         }
     }
 
-    // 创建音频轨道（AudioState 在 worker 上 Init/StartRecording）
+    // 创建音频轨道
     if (!audio_track_) {
         spdlog::info("[session] CreateAudioSource/Track");
         auto audio_source = factory->CreateAudioSource(webrtc::AudioOptions());
         audio_track_ = factory->CreateAudioTrack("audio0", audio_source.get());
-        spdlog::info("[session] audio track ready recording={}",
-                     XRtcGlobal::instance().audio_device() &&
-                         XRtcGlobal::instance().audio_device()->Recording());
+        audio_track_->set_enabled(false); //关闭推流
     }
-    //创建视频轨道
     if (!video_track_) {
         video_track_ = factory->CreateVideoTrack(video_source_, "video0");
+        video_track_->set_enabled(false); //关闭推流
     }
     if (!audio_track_ || !video_track_) {
         return xrtc_err(XRtcError::kMediaStartFailed);
@@ -385,14 +512,22 @@ void CallSession::createPublisherPc() {
 
     publisher_pc_->AddTrack(audio_track_, {"stream0"});
     publisher_pc_->AddTrack(video_track_, {"stream0"});
+    // 默认禁推流；WebRTC 可能已 StartRecording，立即停掉等手动开麦
+    muteLocalTracks(true);
+    if (audio_capture_) {
+        audio_capture_->StopHardwareRecording();
+    }
+    local_video_capturing_ = false;
+    local_audio_capturing_ = false;
     publisher_pc_->CreateOffer();
 }
 
 slots_t<> CallSession::onJoinedAsPublisher() {
     XRtcGlobal::instance().api_thread()->PostTask([this]() {
         spdlog::info(
-            "[session] onJoinedAsPublisher: starting local media + PC");
-        //创建并开启摄像头,启动视频采集,创建视频和音频轨道
+            "[session] onJoinedAsPublisher: prepare local media + PC "
+            "(capture deferred)");
+        // 准备采集器与轨道，默认不开采、不推流
         auto st = ensureLocalMedia();
         if (!st) {
             spdlog::error("[session] ensureLocalMedia failed: {}",
@@ -400,7 +535,6 @@ slots_t<> CallSession::onJoinedAsPublisher() {
             notifyJoinResult(st.error(), "failed to start local media");
             return;
         }
-        //创建音频源和视频源,添加视频轨道和音频轨道,创建offer,设置本地sdp描述,并发送给janus
         createPublisherPc();
         spdlog::info("[session] notify join success");
         notifyJoinResult(XRtcError::kNOERROR, "joined");

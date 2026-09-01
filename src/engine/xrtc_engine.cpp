@@ -256,4 +256,45 @@ void XRtcEngine::mute_video(bool mute) {
     }
 }
 
+void XRtcEngine::start_local_video() {
+    if (!call_session_ || !call_session_->active()) {
+        spdlog::warn("[engine] start_local_video: not in call");
+        return;
+    }
+    if (!call_session_->StartLocalVideo()) {
+        spdlog::error("[engine] start_local_video: capture failed");
+        return;
+    }
+    call_session_->MuteVideo(false);
+}
+
+void XRtcEngine::stop_local_video() {
+    if (!call_session_) {
+        return;
+    }
+    // 先停采集并推黑帧（轨仍 enable），再 mute，远端才能收到黑帧
+    call_session_->StopLocalVideo();
+    call_session_->MuteVideo(true);
+}
+
+void XRtcEngine::start_local_audio() {
+    if (!call_session_ || !call_session_->active()) {
+        spdlog::warn("[engine] start_local_audio: not in call");
+        return;
+    }
+    if (!call_session_->StartLocalAudio()) {
+        spdlog::error("[engine] start_local_audio: capture failed");
+        return;
+    }
+    call_session_->MuteAudio(false);
+}
+
+void XRtcEngine::stop_local_audio() {
+    if (!call_session_) {
+        return;
+    }
+    call_session_->MuteAudio(true);
+    call_session_->StopLocalAudio();
+}
+
 }  // namespace xrtc

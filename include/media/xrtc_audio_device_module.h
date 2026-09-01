@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -27,6 +28,11 @@ public:
         webrtc::scoped_refptr<webrtc::AudioDeviceModule> platform);
 
     void SetCaptureListener(AudioCapture* listener);
+
+    /// 用户是否允许硬件录音。false 时 WebRTC 的 StartRecording 会被吞掉（返回成功但不启麦），
+    /// 进房默认关麦；预览/手动开麦前设为 true。须在 worker 线程调用。
+    void SetCaptureEnabled(bool enabled);
+    bool capture_enabled() const { return capture_enabled_.load(); }
 
     /// 保证平台 ADM 回调到本类（可在 StartRecording 前调用；须在 worker 线程）
     int32_t EnsurePlatformAudioCallback();
@@ -139,6 +145,10 @@ private:
     webrtc::AudioTransport* webrtc_transport_ = nullptr;
     ///当前回调函数是否设置的标志位
     bool platform_callback_installed_ = false;
+    /// 默认关：避免 AddTrack/CreateOffer 触发 AudioState 自动开麦
+    std::atomic<bool> capture_enabled_{false};
+    /// WebRTC 已请求 StartRecording，但当时 capture_enabled_ 为 false
+    std::atomic<bool> pending_start_{false};
 };
 
 }  // namespace xrtc

@@ -98,14 +98,21 @@ private slots:
     void start_audio_source();
     void join_meeting();
     void leave_meeting();
+    void toggle_meeting_video();
+    void toggle_meeting_audio();
     void on_video_request_changed();
 
 private:
+    void set_meeting_media_buttons(bool in_meeting);
+    void reset_meeting_media_button_labels();
+
     Ui::Widget* ui;
     xrtc::IXRtcEngine* engine = nullptr;
     xrtc::IXRtcMediaSource* video_source = nullptr;
     xrtc::IXRtcMediaSource* audio_source = nullptr;
     bool in_meeting_ = false;
+    bool meeting_video_on_ = false;
+    bool meeting_audio_on_ = false;
 
     std::vector<xrtc::XRTCDeviceInfo> video_devices_;  ///< 摄像头设备列表
     std::vector<xrtc::XRTCDeviceInfo> audio_devices_;  ///< 麦克风设备列表

@@ -208,6 +208,26 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="btn_meeting_video">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>会议：开启摄像头</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_meeting_audio">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>会议：开启麦克风</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QLabel" name="status_label">
        <property name="text">
         <string>状态: idle</string>

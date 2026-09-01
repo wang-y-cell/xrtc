@@ -223,6 +223,7 @@ bool AudioCapture::start_recording_on_worker() {
     if (!opened_ && !open_on_worker()) {
         return false;
     }
+    adm_->SetCaptureEnabled(true);
     if (adm_->Recording()) {
         started_ = true;
         return true;
@@ -249,14 +250,36 @@ bool AudioCapture::stop_on_worker() {
     }
     adm_->SetCaptureListener(nullptr);
     level_tapping_ = false;
-    // 仅停止由本类主动 Start 的录音；进房路径交给 AudioState 随轨释放停录
-    if (started_ && adm_->Recording()) {
+    adm_->SetCaptureEnabled(false);
+    if (adm_->Recording()) {
         adm_->StopRecording();
     }
     started_ = false;
     opened_ = false;
     spdlog::info("[audio-cap] stopped");
     return true;
+}
+
+bool AudioCapture::StopHardwareRecording() {
+    // ADM 启停须在 worker；勿再绕 api，避免与 session 同线程死锁
+    auto* worker = AdmWorker();
+    auto run = [this]() -> bool {
+        if (!adm_) {
+            started_ = false;
+            return true;
+        }
+        adm_->SetCaptureEnabled(false);
+        if (adm_->Recording()) {
+            adm_->StopRecording();
+        }
+        started_ = false;
+        spdlog::info("[audio-cap] hardware recording stopped (keep open)");
+        return true;
+    };
+    if (worker && webrtc::Thread::Current() != worker) {
+        return worker->BlockingCall(run);
+    }
+    return run();
 }
 
 bool AudioCapture::open() {

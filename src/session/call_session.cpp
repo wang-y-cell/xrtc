@@ -174,13 +174,22 @@ slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
 slots_t<> CallSession::onJanusError(const std::string& err) {
     XRtcGlobal::instance().api_thread()->PostTask([this, err]() {
         spdlog::error("[session] signaling error: {}", err);
+        const bool already_joined = join_notified_;
         active_ = false;
         if (janus_) {
             janus_->Disconnect();
         }
         const std::string msg =
             err.empty() ? "signaling failed (empty detail)" : err;
-        notifyJoinResult(XRtcError::kSignalingFailed, msg);
+        if (already_joined) {
+            // 进房成功后的 hangup/ICE failed：不能再走 on_join_result（已被吞掉）
+            if (auto* obs = XRtcGlobal::instance().observer()) {
+                obs->on_connection_state(XRTCConnectionState::kFailed);
+                obs->on_leave(XRtcError::kSignalingFailed);
+            }
+        } else {
+            notifyJoinResult(XRtcError::kSignalingFailed, msg);
+        }
     });
     return {};
 }

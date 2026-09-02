@@ -102,12 +102,12 @@ public:
     virtual void mute_audio(bool mute) = 0;
     virtual void mute_video(bool mute) = 0;
 
-    /// 会议内：开采集并开始推流
-    virtual void start_local_video() = 0;
+    /// 会议内：开采集并开始推流；失败返回 false（未在通话中或采集失败）
+    virtual bool start_local_video() = 0;
     /// 会议内：停推流并停采集
     virtual void stop_local_video() = 0;
-    /// 会议内：开麦采集并开始推流
-    virtual void start_local_audio() = 0;
+    /// 会议内：开麦采集并开始推流；失败返回 false
+    virtual bool start_local_audio() = 0;
     /// 会议内：停推流并停硬件录音
     virtual void stop_local_audio() = 0;
 };

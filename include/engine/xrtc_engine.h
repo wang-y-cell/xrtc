@@ -46,9 +46,9 @@ public:
     void mute_audio(bool mute) override;
     void mute_video(bool mute) override;
 
-    void start_local_video() override;
+    bool start_local_video() override;
     void stop_local_video() override;
-    void start_local_audio() override;
+    bool start_local_audio() override;
     void stop_local_audio() override;
 
 private:

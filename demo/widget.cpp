@@ -561,7 +561,10 @@ void Widget::toggle_meeting_video() {
         return;
     }
     if (!meeting_video_on_) {
-        engine->start_local_video();
+        if (!engine->start_local_video()) {
+            ui->status_label->setText(QString::fromUtf8("状态: 摄像头开启失败"));
+            return;
+        }
         meeting_video_on_ = true;
         ui->btn_meeting_video->setStyleSheet(btnStop);
         ui->btn_meeting_video->setText(QString::fromUtf8("会议：关闭摄像头"));
@@ -581,7 +584,10 @@ void Widget::toggle_meeting_audio() {
         return;
     }
     if (!meeting_audio_on_) {
-        engine->start_local_audio();
+        if (!engine->start_local_audio()) {
+            ui->status_label->setText(QString::fromUtf8("状态: 麦克风开启失败"));
+            return;
+        }
         meeting_audio_on_ = true;
         ui->btn_meeting_audio->setStyleSheet(btnStop);
         ui->btn_meeting_audio->setText(QString::fromUtf8("会议：关闭麦克风"));

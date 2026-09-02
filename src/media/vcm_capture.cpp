@@ -78,7 +78,8 @@ void VcmCapture::set_track_source(
 }
 
 bool VcmCapture::start() {
-    auto do_start = [this]() {
+    bool ok = false;
+    auto do_start = [this, &ok]() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
@@ -92,6 +93,11 @@ bool VcmCapture::start() {
                 error = XRtcError::kVideoSourceStartFailed;
                 break;
             }
+            // stop() 会 SetLive(false)；再次 start 必须恢复，否则帧无法进入 WebRTC
+            if (track_source_) {
+                track_source_->SetLive(true);
+            }
+            ok = true;
             spdlog::debug("开始采集成功, device_id: {}",
                           _vcm->CurrentDeviceName());
         } while (false);
@@ -108,7 +114,7 @@ bool VcmCapture::start() {
     } else {
         _current_thread->BlockingCall(do_start);
     }
-    return true;
+    return ok;
 }
 
 bool VcmCapture::stop() {

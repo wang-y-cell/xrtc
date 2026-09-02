@@ -1,7 +1,5 @@
 ﻿#include <engine/xrtc_engine.h>
 
-#include "api/audio/create_audio_device_module.h"
-#include "api/environment/environment_factory.h"
 #include "rtc_base/thread.h"
 #include <engine/xrtc_global.h>
 #include <media/audio_capture.h>
@@ -69,6 +67,8 @@ void destroy_xrtc_engine(IXRtcEngine* engine) {
     if (!engine) {
         return;
     }
+    // leave 前摘掉 observer，避免停会话时的帧/状态回调打到正在销毁的 UI
+    XRtcGlobal::instance().set_observer(nullptr);
     engine->leave();
     XRtcGlobal::instance().api_thread()->BlockingCall([engine]() {
         delete engine;
@@ -76,22 +76,13 @@ void destroy_xrtc_engine(IXRtcEngine* engine) {
 }
 
 XRtcEngine::XRtcEngine() {
-    /*
-     * 延迟 ADM Init：在 Windows 上过早 Init 麦克风可能干扰同进程
-     * libwebsockets 的 select() 连接检测。真正推流前再 Init。
-     * XrtcAudioDeviceModule 包装平台 ADM，旁路拷贝采集 PCM 供预览音量。
-     */
-    auto platform = webrtc::CreateAudioDeviceModule(
-        webrtc::CreateEnvironment(),
-        webrtc::AudioDeviceModule::kPlatformDefaultAudio);
-    audio_device_ = XrtcAudioDeviceModule::Create(std::move(platform));
-    if (audio_device_) {
-        XRtcGlobal::instance().InitAudioDeviceModule(audio_device_);
-    }
+    // 与 PeerConnectionFactory 共用同一 ADM，禁止每次建会新建平台设备模块
+    audio_device_ = XRtcGlobal::instance().GetOrCreateAudioDeviceModule();
 }
 
 XRtcEngine::~XRtcEngine() {
     call_session_.reset();
+    // 不释放全局 ADM：工厂仍持有它，供下次进会复用
 }
 
 std::vector<XRTCDeviceInfo> XRtcEngine::get_video_device_info() {
@@ -285,16 +276,17 @@ void XRtcEngine::mute_video(bool mute) {
     }
 }
 
-void XRtcEngine::start_local_video() {
+bool XRtcEngine::start_local_video() {
     if (!call_session_ || !call_session_->active()) {
         spdlog::warn("[engine] start_local_video: not in call");
-        return;
+        return false;
     }
     if (!call_session_->StartLocalVideo()) {
         spdlog::error("[engine] start_local_video: capture failed");
-        return;
+        return false;
     }
     call_session_->MuteVideo(false);
+    return true;
 }
 
 void XRtcEngine::stop_local_video() {
@@ -306,16 +298,17 @@ void XRtcEngine::stop_local_video() {
     call_session_->MuteVideo(true);
 }
 
-void XRtcEngine::start_local_audio() {
+bool XRtcEngine::start_local_audio() {
     if (!call_session_ || !call_session_->active()) {
         spdlog::warn("[engine] start_local_audio: not in call");
-        return;
+        return false;
     }
     if (!call_session_->StartLocalAudio()) {
         spdlog::error("[engine] start_local_audio: capture failed");
-        return;
+        return false;
     }
     call_session_->MuteAudio(false);
+    return true;
 }
 
 void XRtcEngine::stop_local_audio() {

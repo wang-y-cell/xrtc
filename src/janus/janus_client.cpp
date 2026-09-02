@@ -1,4 +1,5 @@
 ﻿#include <janus/janus_client.h>
+#include <janus/janus_event_utils.h>
 
 #include <chrono>
 
@@ -39,7 +40,7 @@ XRtcStatus JanusClient::Connect(const XRTCJoinConfig& config) {
     create_room_pending_ = false;
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
-        feed_to_handle_.clear();
+        subscribe_state_.Clear();
         tx_ops_.clear();
         tx_feeds_.clear();
     }
@@ -76,6 +77,12 @@ void JanusClient::Disconnect() {
     session_id_ = 0;
     pub_handle_ = 0;
     create_room_pending_ = false;
+    {
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        subscribe_state_.Clear();
+        tx_ops_.clear();
+        tx_feeds_.clear();
+    }
 }
 
 void JanusClient::send_json(const json& obj) {
@@ -277,14 +284,21 @@ void JanusClient::SendTrickleComplete(uint64_t handle_id) {
 }
 
 void JanusClient::Subscribe(uint64_t feed_id) {
-    {
-        std::lock_guard<std::mutex> lock(map_mutex_);
-        //如果我已经在订阅这个远端的发布者了,则直接返回
-        if (feed_to_handle_.count(feed_id)) {
-            return;
-        }
+    if (!subscribe_state_.TryBeginSubscribe(feed_id)) {
+        return;
     }
     attach_subscriber(feed_id);
+}
+
+void JanusClient::DetachSubscriber(uint64_t feed_id) {
+    const auto handle = subscribe_state_.OnFeedLeft(feed_id);
+    if (!handle || session_id_ == 0 || *handle == 0) {
+        return;
+    }
+    send_json({{"janus", "detach"},
+               {"session_id", session_id_},
+               {"handle_id", *handle},
+               {"transaction", new_transaction()}});
 }
 
 void JanusClient::attach_subscriber(uint64_t feed_id) {
@@ -351,6 +365,19 @@ utils::slots_t<> JanusClient::on_ws_message(const std::string& text) {
         spdlog::warn("[janus] hangup: {}", reason);
         error.emit(std::string("hangup: ") + reason);
     } else if (janus == "error" || janus == "timeout") {
+        const std::string tx = msg.value("transaction", "");
+        {
+            std::lock_guard<std::mutex> lock(map_mutex_);
+            auto fit = tx_feeds_.find(tx);
+            if (fit != tx_feeds_.end()) {
+                subscribe_state_.OnAttachFailure(fit->second);
+                tx_feeds_.erase(fit);
+            }
+            auto oit = tx_ops_.find(tx);
+            if (oit != tx_ops_.end()) {
+                tx_ops_.erase(oit);
+            }
+        }
         std::string reason = janus;
         if (msg.contains("error") && msg["error"].is_object()) {
             reason = msg["error"].value("reason", janus);
@@ -413,8 +440,8 @@ void JanusClient::handle_success(const json& msg) {
                 feed = fit->second;
                 tx_feeds_.erase(fit);
             }
-            feed_to_handle_[feed] = handle;
         }
+        subscribe_state_.OnAttachSuccess(feed, handle);
 
         //以订阅者的身份进入房间
         json body = {{"request", "join"},
@@ -501,18 +528,15 @@ void JanusClient::handle_event(const json& msg) {
         if (!pubs.empty()) {
             publishers.emit(pubs);
         }
-        //有人停止推流或者退出房间,将发布者信息发送给call_session
+        // 有人停止推流或退出；本端 unpublish 成功为 "unpublished":"ok"，应忽略
         if (data.contains("unpublished") || data.contains("leaving")) {
-            const uint64_t feed =
-                data.contains("unpublished")
-                    ? data.value("unpublished", static_cast<uint64_t>(0))
-                    : data.value("leaving", static_cast<uint64_t>(0));
-            {
-                std::lock_guard<std::mutex> lock(map_mutex_);
-                feed_to_handle_.erase(feed);
+            const auto feed = ParsePublisherLeftFeed(data);
+            if (feed) {
+                publisher_left.emit(*feed, "");
+            } else {
+                spdlog::info(
+                    "[janus] ignore unpublished/leaving non-feed event");
             }
-            //发送call_session的publisher_left信号
-            publisher_left.emit(feed, "");
         }
         // 建房流程中：427 等错误也可能走 event（兼容）
         if (create_room_pending_ && handle_id == pub_handle_ &&
@@ -535,16 +559,7 @@ void JanusClient::handle_event(const json& msg) {
             //调用槽函数,我们需要将janus的sdp注册到我们本地中
             publisher_answer.emit(jsep);
         } else if (jsep.type == "offer") {
-            uint64_t feed = 0;
-            {
-                std::lock_guard<std::mutex> lock(map_mutex_);
-                for (const auto& kv : feed_to_handle_) {
-                    if (kv.second == handle_id) {
-                        feed = kv.first;
-                        break;
-                    }
-                }
-            }
+            uint64_t feed = subscribe_state_.FeedForHandle(handle_id).value_or(0);
             subscriber_offer.emit(feed, handle_id, jsep);
         }
     }

@@ -13,6 +13,7 @@
 
 #include "concurrency/signal_and_slots/signal_and_slots.h"
 #include <janus/websocket_transport.h>
+#include <janus/subscribe_state.h>
 #include <xrtc/xrtc_defines.h>
 #include <internal/xrtc_result.h>
 
@@ -431,6 +432,8 @@ public:
 
 	///@brief 开始订阅远端发布者,订阅远端发布者,发送attach请求,附加订阅者插件,拿到订阅者用的 plugin handle
     void Subscribe(uint64_t feed_id);
+	/// 远端离开时 detach 对应 subscriber handle，释放 Janus 侧资源
+    void DetachSubscriber(uint64_t feed_id);
 	///开始订阅远端发布者,订阅远端发布者,发送attach请求,附加订阅者插件,拿到订阅者用的 plugin handle
 	///把本地生成的 SDP answer 发给 Janus，正式开始拉该路流
     void StartSubscriber(uint64_t handle_id, const JanusJsep& answer);
@@ -516,11 +519,8 @@ private:
     std::unordered_map<std::string, PendingOp> tx_ops_;
 	///待处理的操作,存储发送给janus服务器的transaction字段的值和对应的feed_id
     std::unordered_map<std::string, uint64_t> tx_feeds_;
-	///存储feed_id和发布者句柄的映射,feed_id是janus服务端返回的id,发布者句柄是客户端分配的id
-	///feed_id是房间里某个远端发布者的id,发布者句柄是客户端分配的id
-	/// handle_id是客户端连接videoroom插件之后,janus服务端返回的id,这个id表示一个连接
-	//每个远端的发布者都有一个handle_id,如果我要获得多个远端的视频,我就需要多个handle_id
-    std::unordered_map<uint64_t, uint64_t> feed_to_handle_;
+    /// 订阅去重 / feed→handle（含 pending attach）
+    SubscribeState subscribe_state_;
     std::mutex map_mutex_;
 
     //保持心跳的线程

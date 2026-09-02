@@ -3,6 +3,7 @@
 #include "api/audio_options.h"
 #include "api/video/i420_buffer.h"
 #include "api/video/video_frame.h"
+#include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
 #include <engine/xrtc_global.h>
 #include <media/xrtc_audio_device_module.h>
@@ -59,8 +60,11 @@ void CallSession::bindJanusSignals() {
 
 slots_t<> CallSession::onPublishers(
     const std::vector<JanusPublisherInfo>& pubs) {
-    XRtcGlobal::instance().api_thread()->PostTask([this, pubs]() {
-        //逐个订阅发布者,如果之前已经订阅了就跳过,订阅的过程中会发送相应的信息给janus
+        const uint64_t gen = life_.generation;
+    XRtcGlobal::instance().api_thread()->PostTask([this, pubs, gen]() {
+        if (!isCurrentGeneration(gen)) {
+            return;
+        }
         for (const auto& p : pubs) {
             subscribeFeed(p);
         }
@@ -70,9 +74,16 @@ slots_t<> CallSession::onPublishers(
 
 slots_t<> CallSession::onPublisherLeft(uint64_t feed_id,
                                               const std::string&) {
-    XRtcGlobal::instance().api_thread()->PostTask([this, feed_id]() {
+        const uint64_t gen = life_.generation;
+    XRtcGlobal::instance().api_thread()->PostTask([this, feed_id, gen]() {
+        if (!isCurrentGeneration(gen)) {
+            return;
+        }
         // 先卸 sink，再关 subscriber PC，避免帧回调写已释放内存
         detachRemoteMedia(feed_id);
+        if (janus_) {
+            janus_->DetachSubscriber(feed_id);
+        }
         for (auto it = handle_to_feed_.begin(); it != handle_to_feed_.end();) {
             if (it->second == feed_id) {
                 subscriber_pcs_.erase(it->first);
@@ -91,7 +102,11 @@ slots_t<> CallSession::onPublisherLeft(uint64_t feed_id,
 }
 
 slots_t<> CallSession::onPublisherAnswer(const JanusJsep& jsep) {
-    XRtcGlobal::instance().api_thread()->PostTask([this, jsep]() {
+        const uint64_t gen = life_.generation;
+    XRtcGlobal::instance().api_thread()->PostTask([this, jsep, gen]() {
+        if (!isCurrentGeneration(gen)) {
+            return;
+        }
         if (publisher_pc_) {
             publisher_pc_->SetRemoteDescription(jsep.type, jsep.sdp);
         }
@@ -102,30 +117,54 @@ slots_t<> CallSession::onPublisherAnswer(const JanusJsep& jsep) {
 slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                                                 uint64_t handle_id,
                                                 const JanusJsep& offer) {
+        const uint64_t gen = life_.generation;
     XRtcGlobal::instance().api_thread()->PostTask(
-        [this, feed_id, handle_id, offer]() {
+        [this, feed_id, handle_id, offer, gen]() {
+            if (!isCurrentGeneration(gen)) {
+                return;
+            }
             handle_to_feed_[handle_id] = feed_id;
 
             PeerConnectionHandler::Callbacks pcb;
             pcb.on_local_description =
-                [this, handle_id](const std::string& type,
-                                  const std::string& sdp) {
+                [this, handle_id, gen](const std::string& type,
+                                       const std::string& sdp) {
+                    if (!isCurrentGeneration(gen)) {
+                        return;
+                    }
                     onSubscriberLocalSdp(handle_id, type, sdp);
                 };
-            pcb.on_ice_candidate = [this, handle_id](const std::string& mid,
-                                                     int idx,
-                                                     const std::string& cand) {
+            pcb.on_ice_candidate = [this, handle_id, gen](const std::string& mid,
+                                                          int idx,
+                                                          const std::string& cand) {
+                if (!isCurrentGeneration(gen)) {
+                    return;
+                }
                 janus_->SendTrickle(handle_id, mid, idx, cand);
             };
-            pcb.on_ice_gathering_complete = [this, handle_id]() {
+            pcb.on_ice_gathering_complete = [this, handle_id, gen]() {
+                if (!isCurrentGeneration(gen)) {
+                    return;
+                }
                 janus_->SendTrickleComplete(handle_id);
             };
             pcb.on_track =
-                [this, feed_id](
+                [this, feed_id, gen](
                     webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>
-                        track) { attachRemoteTrack(feed_id, track); };
-            pcb.on_error = [](const std::string& err) {
+                        track) {
+                    if (!isCurrentGeneration(gen)) {
+                        return;
+                    }
+                    attachRemoteTrack(feed_id, track);
+                };
+            pcb.on_error = [this, gen](const std::string& err) {
+                if (!isCurrentGeneration(gen)) {
+                    return;
+                }
                 spdlog::error("Subscriber PC error: {}", err);
+                if (auto* obs = XRtcGlobal::instance().observer()) {
+                    obs->on_connection_state(XRTCConnectionState::kFailed);
+                }
             };
 
             auto factory =
@@ -133,8 +172,12 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
             auto pc =
                 std::make_unique<PeerConnectionHandler>(factory, std::move(pcb));
             if (!pc->Init(config_.ice_servers)) {
-                notifyJoinResult(XRtcError::kPeerConnectionFailed,
-                                 "subscriber pc init failed");
+                spdlog::error("[session] subscriber pc init failed feed={}",
+                              feed_id);
+                if (!life_.join_notified) {
+                    failJoin(XRtcError::kPeerConnectionFailed,
+                             "subscriber pc init failed");
+                }
                 return;
             }
             pc->SetRemoteDescription(offer.type, offer.sdp);
@@ -153,16 +196,18 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
 slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
                                                 const std::string& mid, int idx,
                                                 const std::string& cand) {
+        const uint64_t gen = life_.generation;
     XRtcGlobal::instance().api_thread()->PostTask(
-        [this, handle_id, mid, idx, cand]() {
-            //如果这个ice是我推流的ice的回复
+        [this, handle_id, mid, idx, cand, gen]() {
+            if (!isCurrentGeneration(gen)) {
+                return;
+            }
             if (handle_id == janus_->publisher_handle()) {
                 if (publisher_pc_) {
                     publisher_pc_->AddIceCandidate(mid, idx, cand);
                 }
                 return;
             }
-            //如果这个ice是拉流的回复
             auto it = subscriber_pcs_.find(handle_id);
             if (it != subscriber_pcs_.end()) {
                 it->second->AddIceCandidate(mid, idx, cand);
@@ -172,74 +217,73 @@ slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
 }
 
 slots_t<> CallSession::onJanusError(const std::string& err) {
-    XRtcGlobal::instance().api_thread()->PostTask([this, err]() {
-        spdlog::error("[session] signaling error: {}", err);
-        const bool already_joined = join_notified_;
-        active_ = false;
-        if (janus_) {
-            janus_->Disconnect();
+    const uint64_t gen = life_.generation;
+    XRtcGlobal::instance().api_thread()->PostTask([this, err, gen]() {
+        if (gen != life_.generation) {
+            return;
         }
+        spdlog::error("[session] signaling error: {}", err);
         const std::string msg =
             err.empty() ? "signaling failed (empty detail)" : err;
-        if (already_joined) {
-            // 进房成功后的 hangup/ICE failed：不能再走 on_join_result（已被吞掉）
-            if (auto* obs = XRtcGlobal::instance().observer()) {
-                obs->on_connection_state(XRTCConnectionState::kFailed);
-                obs->on_leave(XRtcError::kSignalingFailed);
-            }
+        if (life_.join_notified) {
+            failAfterJoined(XRtcError::kSignalingFailed, msg);
         } else {
-            notifyJoinResult(XRtcError::kSignalingFailed, msg);
+            failJoin(XRtcError::kSignalingFailed, msg);
         }
     });
     return {};
 }
 
 slots_t<> CallSession::onJanusDestroyed() {
-    spdlog::info("Janus connection destroyed");
+    const uint64_t gen = life_.generation;
+    XRtcGlobal::instance().api_thread()->PostTask([this, gen]() {
+        if (gen != life_.generation && !life_.active) {
+            // 世代已变且已 inactive：补一次幂等清理即可
+            cleanupMediaResources();
+            return;
+        }
+        spdlog::info("[session] Janus connection destroyed active={} tearing={}",
+                     life_.active, life_.tearing_down);
+        auto action = life_.On(SessionLifecycle::Event::kQuietDestroy,
+                               "connection closed");
+        applyLifecycleAction(action, /*already_disconnected=*/true);
+    });
     return {};
 }
 
 void CallSession::Start(const XRTCJoinConfig& config) {
-    //如果已经处于通话状态,则通知上层已经处于通话状态
-    if (active_) {
+    auto start_action = life_.On(SessionLifecycle::Event::kStartOk);
+    if (start_action.ignore) {
         notifyJoinResult(XRtcError::kAlreadyInCall, "already in call");
         return;
     }
-    //如果janus_ws_url为空,则通知上层参数错误
     if (config.janus_ws_url.empty()) {
+        life_.active = false;
         notifyJoinResult(XRtcError::kInvalidParam, "empty janus_ws_url");
         return;
     }
 
     config_ = config;
-    join_notified_ = false;
-    active_ = true;
-    //连接janus服务器
     auto st = janus_->Connect(config_);
     if (!st) {
-        //如果连接失败,则通知上层连接失败
-        active_ = false;
+        life_.active = false;
+        cleanupMediaResources();
         notifyJoinResult(st.error(),
                          std::string(XRtcErrorToString(st.error())));
     }
 }
 
 void CallSession::Stop() {
-    const bool was_active = active_;
-    active_ = false;
+    auto action = life_.On(SessionLifecycle::Event::kUserStop);
+    applyLifecycleAction(action, /*already_disconnected=*/false);
+}
 
-    if (janus_) {
-        janus_->Disconnect();
-    }
-
-    auto cleanup = [this]() {
-        // 1) 先从 VideoTrack 卸掉 sink，杜绝退房/退出时的堆损坏
+void CallSession::cleanupMediaResources() {
+    auto run = [this]() {
         detachAllRemoteMedia();
-        // 2) 再关 PC（Close 内会清空回调）
         publisher_pc_.reset();
         subscriber_pcs_.clear();
         handle_to_feed_.clear();
-        // 3) 本地采集与轨
         audio_track_ = nullptr;
         video_track_ = nullptr;
         video_source_ = nullptr;
@@ -254,36 +298,98 @@ void CallSession::Stop() {
             capture_.reset();
         }
     };
-
-    if (webrtc::Thread::Current() == XRtcGlobal::instance().api_thread()) {
-        cleanup();
-    } else {
-        XRtcGlobal::instance().api_thread()->BlockingCall(cleanup);
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        api->BlockingCall(run);
+        return;
     }
+    run();
+}
 
-    if (was_active) {
+void CallSession::applyLifecycleAction(const SessionLifecycle::Action& action,
+                                       bool already_disconnected) {
+    if (action.ignore && !action.cleanup_media) {
+        life_.FinishTeardown();
+        return;
+    }
+    if (action.disconnect && !already_disconnected && janus_) {
+        janus_->Disconnect();
+    }
+    if (action.cleanup_media) {
+        cleanupMediaResources();
+    }
+    if (action.notify_join_fail) {
+        notifyJoinResult(action.leave_or_join_error, action.message);
+    }
+    if (action.notify_leave) {
         if (auto* obs = XRtcGlobal::instance().observer()) {
-            obs->on_leave(XRtcError::kNOERROR);
+            if (action.leave_or_join_error != XRtcError::kNOERROR) {
+                obs->on_connection_state(XRTCConnectionState::kFailed);
+            }
+            obs->on_leave(action.leave_or_join_error);
         }
+    }
+    life_.FinishTeardown();
+}
+
+void CallSession::failJoin(XRtcError error, const std::string& message) {
+    auto action = life_.On(SessionLifecycle::Event::kFailJoin, message);
+    action.leave_or_join_error = error;
+    action.message = message;
+    // On() 已按 join_notified 决定；此处强制使用调用方错误码
+    if (!life_.join_notified) {
+        action.notify_join_fail = true;
+        action.notify_leave = false;
+    }
+    applyLifecycleAction(action, /*already_disconnected=*/false);
+}
+
+void CallSession::failAfterJoined(XRtcError error, const std::string& message) {
+    auto action = life_.On(SessionLifecycle::Event::kSignalingError, message);
+    action.leave_or_join_error = error;
+    action.message = message;
+    applyLifecycleAction(action, /*already_disconnected=*/false);
+}
+
+void CallSession::notifyJoinResult(XRtcError error,
+                                   const std::string& message) {
+    if (life_.join_notified) {
+        return;
+    }
+    life_.MarkJoinNotified();
+    if (auto* obs = XRtcGlobal::instance().observer()) {
+        obs->on_join_result(error, message);
     }
 }
 
 ///@brief 静音音频
 ///@param mute 是否静音
 void CallSession::MuteAudio(bool mute) {
-    XRtcGlobal::instance().api_thread()->PostTask([this, mute]() {
+    auto run = [this, mute]() {
         if (publisher_pc_) {
             publisher_pc_->MuteAudio(mute);
         }
-    });
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        api->BlockingCall(run);
+        return;
+    }
+    run();
 }
 
 void CallSession::MuteVideo(bool mute) {
-    XRtcGlobal::instance().api_thread()->PostTask([this, mute]() {
+    auto run = [this, mute]() {
         if (publisher_pc_) {
             publisher_pc_->MuteVideo(mute);
         }
-    });
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        api->BlockingCall(run);
+        return;
+    }
+    run();
 }
 
 void CallSession::muteLocalTracks(bool mute) {
@@ -411,17 +517,6 @@ bool CallSession::StopLocalAudio() {
     return run();
 }
 
-void CallSession::notifyJoinResult(XRtcError error,
-                                   const std::string& message) {
-    if (join_notified_) {
-        return;
-    }
-    join_notified_ = true;
-    if (auto* obs = XRtcGlobal::instance().observer()) {
-        obs->on_join_result(error, message);
-    }
-}
-
 XRtcStatus CallSession::ensureLocalMedia() {
     //WebRTC 全局工厂，用来创建 AudioTrack、VideoTrack 等。拿不到就返回 kMediaStartFailed
     auto factory = XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
@@ -489,38 +584,76 @@ XRtcStatus CallSession::ensureLocalMedia() {
 }
 
 void CallSession::createPublisherPc() {
+        const uint64_t gen = life_.generation;
     PeerConnectionHandler::Callbacks pcb;
-    pcb.on_local_description = [this](const std::string& type,
-                                      const std::string& sdp) {
+    pcb.on_local_description = [this, gen](const std::string& type,
+                                           const std::string& sdp) {
+        if (!isCurrentGeneration(gen)) {
+            return;
+        }
         onPublisherLocalSdp(type, sdp);
     };
-    pcb.on_ice_candidate = [this](const std::string& mid, int idx,
-                                  const std::string& cand) {
+    pcb.on_ice_candidate = [this, gen](const std::string& mid, int idx,
+                                       const std::string& cand) {
+        if (!isCurrentGeneration(gen)) {
+            return;
+        }
         janus_->SendTrickle(janus_->publisher_handle(), mid, idx, cand);
     };
-    pcb.on_ice_gathering_complete = [this]() {
+    pcb.on_ice_gathering_complete = [this, gen]() {
+        if (!isCurrentGeneration(gen)) {
+            return;
+        }
         janus_->SendTrickleComplete(janus_->publisher_handle());
     };
-    pcb.on_connection_state = [](XRTCConnectionState state) {
+    pcb.on_connection_state = [this, gen](XRTCConnectionState state) {
+        if (!isCurrentGeneration(gen)) {
+            return;
+        }
         if (auto* obs = XRtcGlobal::instance().observer()) {
             obs->on_connection_state(state);
         }
+        if (state == XRTCConnectionState::kFailed) {
+            spdlog::error("[session] publisher PC entered failed state");
+            if (!life_.join_notified) {
+                failJoin(XRtcError::kPeerConnectionFailed, "ice/pc failed");
+            } else {
+                failAfterJoined(XRtcError::kPeerConnectionFailed,
+                                "ice/pc failed");
+            }
+        }
     };
-    pcb.on_error = [this](const std::string& err) {
-        notifyJoinResult(XRtcError::kPeerConnectionFailed, err);
+    pcb.on_error = [this, gen](const std::string& err) {
+        if (gen != life_.generation) {
+            return;
+        }
+        spdlog::error("[session] publisher PC error: {}", err);
+        if (!life_.join_notified) {
+            failJoin(XRtcError::kPeerConnectionFailed, err);
+            return;
+        }
+        failAfterJoined(XRtcError::kPeerConnectionFailed, err);
     };
 
     auto factory = XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
     publisher_pc_ =
         std::make_unique<PeerConnectionHandler>(factory, std::move(pcb));
     if (!publisher_pc_->Init(config_.ice_servers)) {
-        notifyJoinResult(XRtcError::kPeerConnectionFailed,
-                         "publisher pc init failed");
+        publisher_pc_.reset();
+        failJoin(XRtcError::kPeerConnectionFailed, "publisher pc init failed");
         return;
     }
 
-    publisher_pc_->AddTrack(audio_track_, {"stream0"});
-    publisher_pc_->AddTrack(video_track_, {"stream0"});
+    if (!publisher_pc_->AddTrack(audio_track_, {"stream0"})) {
+        publisher_pc_.reset();
+        failJoin(XRtcError::kPeerConnectionFailed, "add audio track failed");
+        return;
+    }
+    if (!publisher_pc_->AddTrack(video_track_, {"stream0"})) {
+        publisher_pc_.reset();
+        failJoin(XRtcError::kPeerConnectionFailed, "add video track failed");
+        return;
+    }
     // 默认禁推流；WebRTC 可能已 StartRecording，立即停掉等手动开麦
     muteLocalTracks(true);
     if (audio_capture_) {
@@ -532,19 +665,25 @@ void CallSession::createPublisherPc() {
 }
 
 slots_t<> CallSession::onJoinedAsPublisher() {
-    XRtcGlobal::instance().api_thread()->PostTask([this]() {
+        const uint64_t gen = life_.generation;
+    XRtcGlobal::instance().api_thread()->PostTask([this, gen]() {
+        if (!isCurrentGeneration(gen)) {
+            return;
+        }
         spdlog::info(
             "[session] onJoinedAsPublisher: prepare local media + PC "
             "(capture deferred)");
-        // 准备采集器与轨道，默认不开采、不推流
         auto st = ensureLocalMedia();
         if (!st) {
             spdlog::error("[session] ensureLocalMedia failed: {}",
                               XRtcErrorToString(st.error()));
-            notifyJoinResult(st.error(), "failed to start local media");
+            failJoin(st.error(), "failed to start local media");
             return;
         }
         createPublisherPc();
+        if (!life_.active) {
+            return;
+        }
         spdlog::info("[session] notify join success");
         notifyJoinResult(XRtcError::kNOERROR, "joined");
     });

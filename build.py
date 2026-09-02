@@ -56,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         help='并行编译线程数',
     )
     parser.add_argument(
+        '--test',
+        action='store_true',
+        help='构建并运行 xrtc_tests（GoogleTest）',
+    )
+    parser.add_argument(
         '--config',
         default='debug',
         choices=['debug', 'release'],
@@ -258,6 +263,7 @@ def configure(
     *,
     config: str,
     demo: bool,
+    tests: bool,
     qt_prefix: Path | None,
     boost_prefix: Path,
     env: dict[str, str],
@@ -275,6 +281,7 @@ def configure(
         f'-DCMAKE_BUILD_TYPE={config.capitalize()}',
         f'-DCMAKE_MAKE_PROGRAM={ninja.as_posix()}',
         f'-DBUILD_XRTC_DEMO={"ON" if demo else "OFF"}',
+        f'-DBUILD_XRTC_TESTS=ON',
         f'-DBoost_ROOT={boost_prefix.as_posix()}',
     ]
     if demo:
@@ -292,6 +299,7 @@ def sync_cmake_options(
     build_dir: Path,
     *,
     demo: bool,
+    tests: bool,
     qt_prefix: Path | None,
     boost_prefix: Path | None,
     env: dict[str, str],
@@ -309,6 +317,7 @@ def sync_cmake_options(
         '-S', str(ROOT),
         '-B', str(build_dir),
         f'-DBUILD_XRTC_DEMO={"ON" if demo else "OFF"}',
+        f'-DBUILD_XRTC_TESTS=ON',
         f'-DBoost_ROOT={boost_prefix.as_posix()}',
     ]
     if demo:
@@ -330,18 +339,38 @@ def build(
     config: str,
     job: int,
     demo: bool,
+    tests: bool,
     env: dict[str, str],
 ) -> None:
-    run_cmd(
-        [
-            'cmake',
-            '--build', str(build_dir),
-            '--config', config.capitalize(),
-            '--parallel', str(job),
-            '--target', TARGET_NAME if demo else SDK_TARGET,
-        ],
-        env=env,
-    )
+    targets: list[str] = []
+    if demo:
+        targets.append(TARGET_NAME)
+    else:
+        targets.append(SDK_TARGET)
+    if tests:
+        targets.append('xrtc_tests')
+
+    for target in targets:
+        run_cmd(
+            [
+                'cmake',
+                '--build', str(build_dir),
+                '--config', config.capitalize(),
+                '--parallel', str(job),
+                '--target', target,
+            ],
+            env=env,
+        )
+
+
+def run_tests(build_dir: Path, *, config: str, env: dict[str, str]) -> None:
+    exe_name = 'xrtc_tests.exe' if sys.platform == 'win32' else 'xrtc_tests'
+    exe = build_dir / exe_name
+    if not exe.is_file():
+        exe = build_dir / config.capitalize() / exe_name
+    if not exe.is_file():
+        raise FileNotFoundError(f'未找到测试可执行文件: {exe_name}')
+    run_cmd([str(exe)], cwd=exe.parent, env=env)
 
 
 def find_executable(build_dir: Path, config: str) -> Path:
@@ -384,6 +413,7 @@ def build_target(
     config: str,
     job: int,
     demo: bool,
+    tests: bool,
     qt_lib: str | None,
     boost_path: str | None,
     clean: bool,
@@ -416,6 +446,7 @@ def build_target(
             build_dir,
             config=config,
             demo=demo,
+            tests=tests,
             qt_prefix=qt_prefix,
             boost_prefix=boost_prefix,
             env=env,
@@ -424,12 +455,17 @@ def build_target(
         sync_cmake_options(
             build_dir,
             demo=demo,
+            tests=tests,
             qt_prefix=qt_prefix,
             boost_prefix=boost_prefix,
             env=env,
         )
 
-    build(build_dir, config=config, job=job, demo=demo, env=env)
+    build(build_dir, config=config, job=job, demo=demo, tests=tests, env=env)
+
+    if tests:
+        print('运行单元测试: xrtc_tests')
+        run_tests(build_dir, config=config, env=env)
 
     if run:
         exe = find_executable(build_dir, config)
@@ -443,7 +479,7 @@ def main() -> int:
     args = parse_args()
     try:
         # 仅 -c：只清理，不编译
-        if args.clean and not args.demo and not args.run:
+        if args.clean and not args.demo and not args.run and not args.test:
             clean_build(build_dir_for(args.config))
             return 0
 
@@ -451,6 +487,7 @@ def main() -> int:
             config=args.config,
             job=args.job,
             demo=args.demo,
+            tests=args.test,
             qt_lib=args.qt_lib,
             boost_path=args.boost_path,
             clean=args.clean,

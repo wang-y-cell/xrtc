@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -84,6 +85,8 @@ private:
     bool started_ = false;       // 是否由本类调用了 StartRecording
     bool level_tapping_ = false; // 是否已挂旁路 listener
     int64_t last_level_ms_ = 0;
+    std::shared_ptr<std::atomic<bool>> capture_alive_ =
+        std::make_shared<std::atomic<bool>>(false);
 };
 
 }  // namespace xrtc

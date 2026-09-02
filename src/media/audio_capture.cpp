@@ -1,4 +1,5 @@
 #include <media/audio_capture.h>
+#include <media/device_enum_utils.h>
 
 #include <algorithm>
 #include <chrono>
@@ -98,7 +99,7 @@ std::vector<XRTCDeviceInfo> AudioCapture::get_audio_device_info(
     if (total <= 0) {
         return out;
     }
-    const int count = (total > 32) ? 0 : static_cast<int>(total);
+    const int count = ClampDeviceCount(total);
     char id[webrtc::kAdmMaxGuidSize];
     char name[webrtc::kAdmMaxDeviceNameSize];
     for (int i = 0; i < count; ++i) {
@@ -129,7 +130,7 @@ std::vector<XRTCDeviceInfo> AudioCapture::get_playout_device_info(
     if (total <= 0) {
         return out;
     }
-    const int count = (total > 32) ? 0 : static_cast<int>(total);
+    const int count = ClampDeviceCount(total);
     char id[webrtc::kAdmMaxGuidSize];
     char name[webrtc::kAdmMaxDeviceNameSize];
     for (int i = 0; i < count; ++i) {
@@ -164,7 +165,7 @@ bool AudioCapture::set_playout_device(
             spdlog::error("[audio-cap] no playout devices");
             return false;
         }
-        const int count = (total > 32) ? 0 : static_cast<int>(total);
+        const int count = ClampDeviceCount(total);
         if (count <= 0) {
             return false;
         }
@@ -244,7 +245,7 @@ int AudioCapture::resolve_index(const std::string& device_id) const {
     if (total <= 0) {
         return -1;
     }
-    const int count = (total > 32) ? 0 : static_cast<int>(total);
+    const int count = ClampDeviceCount(total);
     if (count <= 0) {
         return -1;
     }
@@ -318,7 +319,7 @@ bool AudioCapture::open_on_worker() {
         spdlog::error("[audio-cap] EnsurePlatformAudioCallback failed");
         return false;
     }
-    adm_->SetCaptureListener(this);
+    adm_->SetCaptureListener(this, capture_alive_);
     level_tapping_ = true;
     opened_ = true;
     spdlog::info("[audio-cap] opened (tap only) device={}", device_id_);
@@ -357,6 +358,7 @@ bool AudioCapture::stop_on_worker() {
         level_tapping_ = false;
         return true;
     }
+    capture_alive_->store(false, std::memory_order_release);
     adm_->SetCaptureListener(nullptr);
     level_tapping_ = false;
     adm_->SetCaptureEnabled(false);

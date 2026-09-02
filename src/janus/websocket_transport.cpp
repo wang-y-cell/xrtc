@@ -1,4 +1,5 @@
 ﻿#include <janus/websocket_transport.h>
+#include <janus/websocket_url.h>
 
 #include <atomic>
 #include <chrono>
@@ -77,39 +78,15 @@ struct WebsocketTransport::Impl {
       @return 如果解析成功，返回 true；否则返回 false
     */
     bool parse_url(const std::string& url) {
-        use_ssl = false;
-        port = 80;
-        path = "/";
-        address.clear();
-        host_header.clear();
-
-        std::string rest = url;
-        if (rest.rfind("wss://", 0) == 0) { //如果url以wss://开头
-            use_ssl = true; //使用ssl
-            port = 443; //端口443
-            rest = rest.substr(6); //去掉wss://
-        } else if (rest.rfind("ws://", 0) == 0) { //如果url以ws://开头
-            rest = rest.substr(5); //去掉ws://
-        } else {
-            return false; //如果url不是wss://或ws://开头，返回false
-        }
-
-        //hostport是第一个/之前的字符串,path是/之后的所有字符串
-        const auto slash = rest.find('/'); //找到/的位置
-        std::string hostport =
-            slash == std::string::npos ? rest : rest.substr(0, slash);
-        path = slash == std::string::npos ? "/" : rest.substr(slash);
-
-        const auto colon = hostport.rfind(':'); //找到:的位置
-        if (colon != std::string::npos) { //如果找到:
-            address = hostport.substr(0, colon); //hostport的前一部分是地址
-            port = std::stoi(hostport.substr(colon + 1)); //hostport的后一部分是端口
-        } else {
-            address = hostport; //如果没找到:，则地址就是hostport
-        }
-        if (address.empty()) { //如果地址为空，返回false
+        WebsocketUrlParts parts;
+        if (!ParseWebsocketUrl(url, &parts)) {
             return false;
         }
+        use_ssl = parts.use_ssl;
+        port = parts.port;
+        path = parts.path;
+        address = parts.address;
+        host_header.clear();
 
         //如果端口是80且没有使用ssl，或者端口是443且使用ssl，则host_header就是地址
         if ((port == 80 && !use_ssl) || (port == 443 && use_ssl)) {

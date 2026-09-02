@@ -1,5 +1,7 @@
 #include <pc/peer_connection.h>
 
+#include <atomic>
+
 #include "api/jsep.h"
 #include "api/make_ref_counted.h"
 #include "api/rtp_sender_interface.h"
@@ -34,12 +36,19 @@ public:
     CreateSdpObserver(
         webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc,
         PeerConnectionHandler::Callbacks callbacks,
+        std::shared_ptr<std::atomic<bool>> alive,
         bool /*is_offer*/)
-        : pc_(std::move(pc)), callbacks_(std::move(callbacks)) {}
+        : pc_(std::move(pc)),
+          callbacks_(std::move(callbacks)),
+          alive_(std::move(alive)) {}
 
     ///CreateOffer / CreateAnswer 异步完成后的回调：WebRTC 已经生成好本地 SDP，
     ///这里把它取出来，并立刻设为 PeerConnection 的本地描述
     void OnSuccess(webrtc::SessionDescriptionInterface* desc) override {
+        if (!alive_ || !alive_->load(std::memory_order_acquire) || !pc_) {
+            delete desc;
+            return;
+        }
         std::string sdp;
         desc->ToString(&sdp); //将sdp对象转换成字符串
         //得到类型offer或者answer
@@ -49,13 +58,17 @@ public:
         //设置本地sdp描述成功的同时开始收集ice候选者,调用AddIceCandidate函数
         //调用AddIceCandidate函数会有多次
         pc_->SetLocalDescription(
-            webrtc::make_ref_counted<LocalSetObserver>(callbacks_, type, sdp)
+            webrtc::make_ref_counted<LocalSetObserver>(callbacks_, alive_, type,
+                                                       sdp)
                 .get(),
             desc);
     }
 
     ///错误回调
     void OnFailure(webrtc::RTCError error) override {
+        if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+            return;
+        }
         RTC_LOG(LS_ERROR) << "CreateSessionDescription failed: "
                           << error.message();
         if (callbacks_.on_error) {
@@ -67,9 +80,11 @@ private:
     class LocalSetObserver : public webrtc::SetSessionDescriptionObserver {
     public:
         LocalSetObserver(PeerConnectionHandler::Callbacks callbacks,
+                         std::shared_ptr<std::atomic<bool>> alive,
                          std::string type,
                          std::string sdp)
             : callbacks_(std::move(callbacks)),
+              alive_(std::move(alive)),
               type_(std::move(type)),
               sdp_(std::move(sdp)) {}
 
@@ -77,6 +92,9 @@ private:
         //WebRTC 已经将本地 SDP 设置到 PeerConnection 中，
         //此处的回调函数是将sdp发送给janus
         void OnSuccess() override {
+            if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+                return;
+            }
             if (callbacks_.on_local_description) {
                 callbacks_.on_local_description(type_, sdp_);
             }
@@ -84,6 +102,9 @@ private:
 
         ///错误回调
         void OnFailure(webrtc::RTCError error) override {
+            if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+                return;
+            }
             RTC_LOG(LS_ERROR) << "SetLocalDescription failed: "
                               << error.message();
             if (callbacks_.on_error) {
@@ -93,12 +114,14 @@ private:
 
     private:
         PeerConnectionHandler::Callbacks callbacks_;
+        std::shared_ptr<std::atomic<bool>> alive_;
         std::string type_;
         std::string sdp_;
     };
 
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc_;
     PeerConnectionHandler::Callbacks callbacks_;
+    std::shared_ptr<std::atomic<bool>> alive_;
 };
 
 }  // namespace
@@ -108,12 +131,18 @@ class RemoteSetObserver
     : public webrtc::SetRemoteDescriptionObserverInterface {
 public:
     RemoteSetObserver(PeerConnectionHandler* handler,
-                      PeerConnectionHandler::Callbacks callbacks)
-        : handler_(handler), callbacks_(std::move(callbacks)) {}
+                      PeerConnectionHandler::Callbacks callbacks,
+                      std::shared_ptr<std::atomic<bool>> alive)
+        : handler_(handler),
+          callbacks_(std::move(callbacks)),
+          alive_(std::move(alive)) {}
 
     ///SetRemoteDescription 异步完成后的回调：
     ///WebRTC 已经将远端 SDP 设置到 PeerConnection 中，
     void OnSetRemoteDescriptionComplete(webrtc::RTCError error) override {
+        if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+            return;
+        }
         if (!error.ok()) {
             RTC_LOG(LS_ERROR) << "SetRemoteDescription failed: "
                               << error.message();
@@ -132,6 +161,7 @@ public:
 private:
     PeerConnectionHandler* handler_;
     PeerConnectionHandler::Callbacks callbacks_;
+    std::shared_ptr<std::atomic<bool>> alive_;
 };
 
 PeerConnectionHandler::PeerConnectionHandler(
@@ -188,7 +218,10 @@ bool PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers) 
 }
 
 void PeerConnectionHandler::Close() {
-    // 先清回调，避免 Close 过程中 OnTrack/ICE 再进业务逻辑
+    // 先失效异步 observer，再清回调，避免 Close 过程中 OnTrack/ICE 再进业务逻辑
+    if (alive_) {
+        alive_->store(false, std::memory_order_release);
+    }
     callbacks_ = {};
     pending_remote_candidates_.clear();
     remote_description_set_ = false;
@@ -221,7 +254,8 @@ void PeerConnectionHandler::CreateOffer() {
     //异步调用,此函数会异步设置本地sdp描述并异步发送给janus
     //先创建本地sdp描述,创建完之后会回调CreateSdpObserver类的OnSuccess函数,之后会回调LocalSetObserver类的OnSuccess函数
     pc_->CreateOffer(
-        webrtc::make_ref_counted<CreateSdpObserver>(pc_, callbacks_, true)
+        webrtc::make_ref_counted<CreateSdpObserver>(pc_, callbacks_, alive_,
+                                                    true)
             .get(),
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions());
 }
@@ -231,7 +265,8 @@ void PeerConnectionHandler::CreateAnswer() {
         return;
     }
     pc_->CreateAnswer(
-        webrtc::make_ref_counted<CreateSdpObserver>(pc_, callbacks_, false)
+        webrtc::make_ref_counted<CreateSdpObserver>(pc_, callbacks_, alive_,
+                                                     false)
             .get(),
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions());
 }
@@ -264,7 +299,7 @@ void PeerConnectionHandler::SetRemoteDescription(const std::string& type,
     //将sdp描述对象设置到peerconnection中
     pc_->SetRemoteDescription(
         std::move(desc),
-        webrtc::make_ref_counted<RemoteSetObserver>(this, callbacks_));
+        webrtc::make_ref_counted<RemoteSetObserver>(this, callbacks_, alive_));
 }
 
 void PeerConnectionHandler::AddIceCandidate(const std::string& sdp_mid,
@@ -350,6 +385,9 @@ void PeerConnectionHandler::MuteVideo(bool mute) {
 
 void PeerConnectionHandler::OnIceGatheringChange(
     webrtc::PeerConnectionInterface::IceGatheringState new_state) {
+    if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+        return;
+    }
     if (new_state ==
             webrtc::PeerConnectionInterface::kIceGatheringComplete &&
         callbacks_.on_ice_gathering_complete) {
@@ -359,6 +397,9 @@ void PeerConnectionHandler::OnIceGatheringChange(
 
 void PeerConnectionHandler::OnIceCandidate(
     const webrtc::IceCandidate* candidate) {
+    if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+        return;
+    }
     if (!candidate || !callbacks_.on_ice_candidate) {
         return;
     }
@@ -379,6 +420,9 @@ void PeerConnectionHandler::OnIceCandidate(
 
 void PeerConnectionHandler::OnTrack(
     webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
+    if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+        return;
+    }
     if (!transceiver || !callbacks_.on_track) {
         return;
     }
@@ -391,6 +435,9 @@ void PeerConnectionHandler::OnTrack(
 
 void PeerConnectionHandler::OnConnectionChange(
     webrtc::PeerConnectionInterface::PeerConnectionState new_state) {
+    if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+        return;
+    }
     if (callbacks_.on_connection_state) {
         callbacks_.on_connection_state(ToXrtcState(new_state));
     }

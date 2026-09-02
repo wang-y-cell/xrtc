@@ -181,7 +181,10 @@ IXRtcMediaSource* XRtcEngine::create_video_source(
 }
 
 void XRtcEngine::destroy_video_source(IXRtcMediaSource* video_source) {
-    XRtcGlobal::instance().api_thread()->PostTask([video_source]() {
+    if (!video_source) {
+        return;
+    }
+    XRtcGlobal::instance().api_thread()->BlockingCall([video_source]() {
         delete video_source;
     });
 }
@@ -200,7 +203,10 @@ IXRtcMediaSource* XRtcEngine::create_audio_source(
 }
 
 void XRtcEngine::destroy_audio_source(IXRtcMediaSource* audio_source) {
-    XRtcGlobal::instance().api_thread()->PostTask([audio_source]() {
+    if (!audio_source) {
+        return;
+    }
+    XRtcGlobal::instance().api_thread()->BlockingCall([audio_source]() {
         delete audio_source;
     });
 }
@@ -239,8 +245,13 @@ void XRtcEngine::join(const XRTCJoinConfig& config) {
         cfg.janus_ws_url, cfg.room_id, cfg.video_device_id, cfg.audio_device_id,
         cfg.playout_device_id.empty() ? "(system default)"
                                       : cfg.playout_device_id);
-    //异步调用Start()
-    XRtcGlobal::instance().api_thread()->PostTask([this, cfg]() {
+    const uint64_t gen = ++join_generation_;
+    XRtcGlobal::instance().api_thread()->PostTask([this, cfg, gen]() {
+        if (gen != join_generation_) {
+            spdlog::info("[engine] skip stale join task gen={} current={}", gen,
+                         join_generation_);
+            return;
+        }
         if (!call_session_) {
             call_session_ = std::make_unique<CallSession>();
         }
@@ -250,73 +261,94 @@ void XRtcEngine::join(const XRTCJoinConfig& config) {
 
 void XRtcEngine::leave() {
     auto stop = [this]() {
+        ++join_generation_;
         if (call_session_) {
             call_session_->Stop();
         }
     };
-    //如果当前线程是api线程,则直接调用stop函数
     if (webrtc::Thread::Current() == XRtcGlobal::instance().api_thread()) {
         stop();
     } else {
-        //如果当前线程不是api线程,则将stop函数放入api线程中执行,如果在api线程阻塞调用
-        //就会出现死锁
         XRtcGlobal::instance().api_thread()->BlockingCall(stop);
     }
 }
 
 void XRtcEngine::mute_audio(bool mute) {
-    if (call_session_) {
-        call_session_->MuteAudio(mute);
+    auto run = [this, mute]() {
+        if (call_session_) {
+            call_session_->MuteAudio(mute);
+        }
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (webrtc::Thread::Current() == api) {
+        run();
+    } else {
+        api->BlockingCall(run);
     }
 }
 
 void XRtcEngine::mute_video(bool mute) {
-    if (call_session_) {
-        call_session_->MuteVideo(mute);
+    auto run = [this, mute]() {
+        if (call_session_) {
+            call_session_->MuteVideo(mute);
+        }
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (webrtc::Thread::Current() == api) {
+        run();
+    } else {
+        api->BlockingCall(run);
     }
 }
 
 bool XRtcEngine::start_local_video() {
-    if (!call_session_ || !call_session_->active()) {
-        spdlog::warn("[engine] start_local_video: not in call");
-        return false;
-    }
-    if (!call_session_->StartLocalVideo()) {
-        spdlog::error("[engine] start_local_video: capture failed");
-        return false;
-    }
-    call_session_->MuteVideo(false);
-    return true;
+    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> bool {
+        if (!call_session_ || !call_session_->active()) {
+            spdlog::warn("[engine] start_local_video: not in call");
+            return false;
+        }
+        if (!call_session_->StartLocalVideo()) {
+            spdlog::error("[engine] start_local_video: capture failed");
+            return false;
+        }
+        call_session_->MuteVideo(false);
+        return true;
+    });
 }
 
 void XRtcEngine::stop_local_video() {
-    if (!call_session_) {
-        return;
-    }
-    // 先停采集并推黑帧（轨仍 enable），再 mute，远端才能收到黑帧
-    call_session_->StopLocalVideo();
-    call_session_->MuteVideo(true);
+    XRtcGlobal::instance().api_thread()->BlockingCall([this]() {
+        if (!call_session_) {
+            return;
+        }
+        call_session_->StopLocalVideo();
+        call_session_->MuteVideo(true);
+    });
 }
 
 bool XRtcEngine::start_local_audio() {
-    if (!call_session_ || !call_session_->active()) {
-        spdlog::warn("[engine] start_local_audio: not in call");
-        return false;
-    }
-    if (!call_session_->StartLocalAudio()) {
-        spdlog::error("[engine] start_local_audio: capture failed");
-        return false;
-    }
-    call_session_->MuteAudio(false);
-    return true;
+    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> bool {
+        if (!call_session_ || !call_session_->active()) {
+            spdlog::warn("[engine] start_local_audio: not in call");
+            return false;
+        }
+        if (!call_session_->StartLocalAudio()) {
+            spdlog::error("[engine] start_local_audio: capture failed");
+            return false;
+        }
+        call_session_->MuteAudio(false);
+        return true;
+    });
 }
 
 void XRtcEngine::stop_local_audio() {
-    if (!call_session_) {
-        return;
-    }
-    call_session_->MuteAudio(true);
-    call_session_->StopLocalAudio();
+    XRtcGlobal::instance().api_thread()->BlockingCall([this]() {
+        if (!call_session_) {
+            return;
+        }
+        call_session_->MuteAudio(true);
+        call_session_->StopLocalAudio();
+    });
 }
 
 }  // namespace xrtc

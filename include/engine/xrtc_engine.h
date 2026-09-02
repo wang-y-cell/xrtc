@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -55,6 +56,8 @@ private:
     XRTCVideoCaptureRequest video_capture_request_;
     webrtc::scoped_refptr<XrtcAudioDeviceModule> audio_device_;
     std::unique_ptr<CallSession> call_session_;
+    /// leave/destroy 递增，作废已排队的 join PostTask
+    uint64_t join_generation_ = 0;
 };
 
 }  // namespace xrtc

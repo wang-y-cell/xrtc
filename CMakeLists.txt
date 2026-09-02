@@ -183,6 +183,63 @@ if(MSVC)
     target_compile_definitions(xrtc PRIVATE _WIN32_WINNT=0x0A00)
 endif()
 
+# ---------- GoogleTest（third_party/googletest）----------
+option(BUILD_XRTC_TESTS "Build xrtc unit tests" ON)
+if(BUILD_XRTC_TESTS)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/googletest EXCLUDE_FROM_ALL)
+    # 与 webrtc/xrtc 一致：关闭 iterator debugging，避免 LNK2038
+    if(TARGET gtest)
+        target_compile_definitions(gtest PUBLIC
+            _ITERATOR_DEBUG_LEVEL=0
+            _HAS_ITERATOR_DEBUGGING=0)
+    endif()
+    if(TARGET gtest_main)
+        target_compile_definitions(gtest_main PUBLIC
+            _ITERATOR_DEBUG_LEVEL=0
+            _HAS_ITERATOR_DEBUGGING=0)
+    endif()
+
+    enable_testing()
+    include(GoogleTest)
+
+    add_executable(xrtc_tests
+        tests/janus_event_utils_test.cpp
+        tests/websocket_url_test.cpp
+        tests/video_select_strategy_test.cpp
+        tests/subscribe_state_test.cpp
+        tests/session_lifecycle_test.cpp
+    )
+    target_link_libraries(xrtc_tests
+        PRIVATE
+            xrtc
+            GTest::gtest_main
+            nlohmann_json
+            ${_XRTC_SPDLOG_LIB}
+    )
+    target_include_directories(xrtc_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${WEBRTC_INCLUDE}/third_party/abseil-cpp
+        ${WEBRTC_INCLUDE}/third_party/libyuv/include
+        ${WEBRTC_INCLUDE}
+    )
+    target_compile_definitions(xrtc_tests PRIVATE
+        WEBRTC_WIN
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        _ITERATOR_DEBUG_LEVEL=0
+        _HAS_ITERATOR_DEBUGGING=0
+        BOOST_ALL_NO_LIB
+    )
+    if(MSVC)
+        target_compile_options(xrtc_tests PRIVATE /utf-8 /bigobj)
+        target_compile_definitions(xrtc_tests PRIVATE _WIN32_WINNT=0x0A00)
+    endif()
+    gtest_discover_tests(xrtc_tests DISCOVERY_MODE PRE_TEST)
+endif()
+
 # ---------- Qt Demo（可选） ----------
 option(BUILD_XRTC_DEMO "Build webrtc_test Qt demo" OFF)
 

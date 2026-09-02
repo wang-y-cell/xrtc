@@ -16,6 +16,8 @@ class AudioCapture;
 struct AudioCaptureTapState {
     std::mutex mutex;
     AudioCapture* listener = nullptr;
+    /// stop 时先置 false，再清空 listener，供录音线程无锁外安全判断
+    std::shared_ptr<std::atomic<bool>> listener_alive;
 };
 
 /// 包装平台 ADM：录音/播放透传；以 AudioTransport 旁路拷贝 PCM
@@ -27,7 +29,9 @@ public:
     static webrtc::scoped_refptr<XrtcAudioDeviceModule> Create(
         webrtc::scoped_refptr<webrtc::AudioDeviceModule> platform);
 
-    void SetCaptureListener(AudioCapture* listener);
+    void SetCaptureListener(
+        AudioCapture* listener,
+        std::shared_ptr<std::atomic<bool>> listener_alive = nullptr);
 
     /// 用户是否允许硬件录音。false 时 WebRTC 的 StartRecording 会被吞掉（返回成功但不启麦），
     /// 进房默认关麦；预览/手动开麦前设为 true。须在 worker 线程调用。

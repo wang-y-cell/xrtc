@@ -19,9 +19,18 @@ XrtcAudioDeviceModule::XrtcAudioDeviceModule(
     : platform_(std::move(platform)),
       tap_(std::make_shared<AudioCaptureTapState>()) {}
 
-void XrtcAudioDeviceModule::SetCaptureListener(AudioCapture* listener) {
+void XrtcAudioDeviceModule::SetCaptureListener(
+    AudioCapture* listener,
+    std::shared_ptr<std::atomic<bool>> listener_alive) {
     std::lock_guard<std::mutex> lock(tap_->mutex);
+    if (tap_->listener_alive) {
+        tap_->listener_alive->store(false, std::memory_order_release);
+    }
     tap_->listener = listener;
+    tap_->listener_alive = std::move(listener_alive);
+    if (tap_->listener && tap_->listener_alive) {
+        tap_->listener_alive->store(true, std::memory_order_release);
+    }
 }
 
 void XrtcAudioDeviceModule::SetCaptureEnabled(bool enabled) {
@@ -264,12 +273,15 @@ int32_t XrtcAudioDeviceModule::RecordedDataIsAvailable(
     bool keyPressed,
     uint32_t& newMicLevel) {
     AudioCapture* listener = nullptr;
+    std::shared_ptr<std::atomic<bool>> alive;
     {
         std::lock_guard<std::mutex> lock(tap_->mutex);
         listener = tap_->listener;
+        alive = tap_->listener_alive;
     }
-    if (listener) {
-        // AudioTransport: nSamples = 每声道采样数，nBytesPerSample 常为 2
+    // 锁外回调，避免观察者同步 stop 时与 SetCaptureListener 死锁；
+    // alive 在 stop 时先于清空 listener 置 false，避免 UAF。
+    if (listener && alive && alive->load(std::memory_order_acquire)) {
         listener->OnAdmCaptureData(audioSamples, nSamples, nBytesPerSample,
                                    nChannels, samplesPerSec);
     }

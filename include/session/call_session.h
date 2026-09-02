@@ -15,6 +15,7 @@
 #include <pc/peer_connection.h>
 #include <xrtc/ixrtc_engine.h>
 #include <internal/xrtc_result.h>
+#include <session/session_lifecycle.h>
 
 namespace xrtc {
 
@@ -52,11 +53,22 @@ public:
     bool local_video_capturing() const { return local_video_capturing_; }
     bool local_audio_capturing() const { return local_audio_capturing_; }
 
-    ///@brief 获取通话状态
-    bool active() const { return active_; }
+    bool active() const { return life_.active; }
 
 private:
     void notifyJoinResult(XRtcError error, const std::string& message);
+    /// 进房失败：断信令 + 清媒体 + on_join_result
+    void failJoin(XRtcError error, const std::string& message);
+    /// 进房后致命失败（信令/安静断线/ICE）：断信令 + 清媒体 + on_leave
+    void failAfterJoined(XRtcError error, const std::string& message);
+    /// 幂等清理本地 PC / 采集（须在 api 线程或经 BlockingCall）
+    void cleanupMediaResources();
+    void applyLifecycleAction(const SessionLifecycle::Action& action,
+                              bool already_disconnected);
+    /// PostTask / PC 回调入口：校验会话仍有效
+    bool isCurrentGeneration(uint64_t gen) const {
+        return life_.active && gen == life_.generation;
+    }
     void bindJanusSignals();
     //本地客户端进入janus房间之后调用
     slots_t<> onJoinedAsPublisher();
@@ -92,8 +104,7 @@ private:
     void detachAllRemoteMedia();
 
     XRTCJoinConfig config_;
-    bool active_ = false;
-    bool join_notified_ = false;
+    SessionLifecycle life_;
 
     /// Beast 线程 emit → Queued 到此 worker；槽内再 PostTask 到 WebRTC api_thread
     std::unique_ptr<utils::worker_thread> signal_thread_;

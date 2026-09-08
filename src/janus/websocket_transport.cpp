@@ -358,7 +358,7 @@ WebsocketTransport::~WebsocketTransport() {
     close();
 }
 
-XRtcStatus WebsocketTransport::open(const std::string& url) {
+Rest<> WebsocketTransport::open(const std::string& url) {
     spdlog::info("[ws] open url={}", url);
     close();
     //解析url地址,失败返回错误

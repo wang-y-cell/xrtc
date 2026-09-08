@@ -8,6 +8,7 @@
 #include <QGraphicsView>
 #include <QLabel>
 #include <mutex>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 #include <iostream>
@@ -61,8 +62,17 @@ private:
 
     /// 远端待渲染帧（引擎线程与 UI 线程共享，需加锁）
     struct RemotePending {
-        QImage image;
+        std::shared_ptr<uint8_t> argb;
+        int width = 0;
+        int height = 0;
         bool scheduled = false;
+    };
+
+    /// 本地待渲染帧（持有池化 buffer，避免再 copy 一份像素）
+    struct LocalPending {
+        std::shared_ptr<uint8_t> argb;
+        int width = 0;
+        int height = 0;
     };
 
     /// 枚举本地摄像头 / 音频设备，并填充到下拉框中
@@ -88,6 +98,8 @@ private:
     xrtc::XRTCVideoCaptureRequest current_video_request() const;
     /// 刷新「实际格式」标签（可传入设备 id；为空则仅显示请求值）
     void refresh_actual_format_label(const std::string& device_id = {});
+    /// 顶层统一处理 Rest<>：失败时更新状态栏并返回 false
+    bool handle_rest(const xrtc::Rest<>& st, const QString& fail_text);
 
     // ---------- XRtcEngineObserver 回调（引擎线程） ----------
 
@@ -146,12 +158,15 @@ private:
     QGraphicsScene* preview_scene_ = nullptr;      ///< 本地预览场景
     QGraphicsPixmapItem* preview_item_ = nullptr;  ///< 本地预览图像项
     std::mutex preview_mutex_;                     ///< 保护 pending_preview_ 的锁
-    QImage pending_preview_;                       ///< 待渲染的本地帧（引擎线程写入）
+    LocalPending pending_preview_;                 ///< 待渲染的本地帧（引擎线程写入）
     bool preview_scheduled_ = false;               ///< 是否已排队一次渲染任务
+    int last_preview_fit_w_ = 0;                   ///< 上次 fitInView 的图像宽
+    int last_preview_fit_h_ = 0;                   ///< 上次 fitInView 的图像高
 
     // ---- 远端多人预览（按 feed_id）----
     std::unordered_map<uint64_t, RemoteViewUi> remote_views_;  ///< 仅 UI 线程
     std::mutex remote_mutex_;  ///< 保护 remote_pending_
     std::unordered_map<uint64_t, RemotePending> remote_pending_;
+    std::unordered_map<uint64_t, std::pair<int, int>> remote_last_fit_size_;
 };
 #endif  // WIDGET_H

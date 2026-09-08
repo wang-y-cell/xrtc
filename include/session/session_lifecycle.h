@@ -9,10 +9,10 @@ namespace xrtc {
 
 /// CallSession 生命周期决策（纯逻辑，可供单测）
 struct SessionLifecycle {
-    bool active = false;
-    bool join_notified = false;
-    bool tearing_down = false;
-    uint64_t generation = 0;
+    bool active = false; // 当前是否在一次通话流程中
+    bool join_notified = false; // 是否已经对上层报过进房成功（on_join_result(ok)）
+    bool tearing_down = false; // 是否正在拆会话（防 Stop / 断线 / ICE 失败重入）
+    uint64_t generation = 0; // 代数；每开一次或拆一次就 ++，用来作废旧的异步回调
 
     enum class Event {
         kStartOk,

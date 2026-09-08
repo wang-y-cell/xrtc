@@ -8,7 +8,10 @@
 #include <media/video_capability_selector.h>
 #include <xrtc/ixrtc_engine.h>
 #include "libyuv/convert_argb.h"
+#include <media/argb_frame_pool.h>
 #include <spdlog/spdlog.h>
+
+#include <algorithm>
 
 namespace xrtc {
 
@@ -77,9 +80,13 @@ void VcmCapture::set_track_source(
     }
 }
 
-bool VcmCapture::start() {
-    bool ok = false;
-    auto do_start = [this, &ok]() {
+void VcmCapture::set_local_preview_enabled(bool enabled) {
+    local_preview_enabled_.store(enabled, std::memory_order_relaxed);
+}
+
+Rest<> VcmCapture::start() {
+    Rest<> status = xrtc_ok();
+    auto do_start = [this, &status]() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
@@ -97,10 +104,13 @@ bool VcmCapture::start() {
             if (track_source_) {
                 track_source_->SetLive(true);
             }
-            ok = true;
             spdlog::debug("开始采集成功, device_id: {}",
                           _vcm->CurrentDeviceName());
         } while (false);
+
+        if (error != XRtcError::kNOERROR) {
+            status = xrtc_err(error);
+        }
 
         XRtcEngineObserver* observer = XRtcGlobal::instance().observer();
         if (observer) {
@@ -114,11 +124,12 @@ bool VcmCapture::start() {
     } else {
         _current_thread->BlockingCall(do_start);
     }
-    return ok;
+    return status;
 }
 
-bool VcmCapture::stop() {
-    auto do_stop = [this]() {
+Rest<> VcmCapture::stop() {
+    Rest<> status = xrtc_ok();
+    auto do_stop = [this, &status]() {
         XRtcError error = XRtcError::kNOERROR;
         do {
             if (!_vcm) {
@@ -133,6 +144,10 @@ bool VcmCapture::stop() {
             track_source_->SetLive(false);
         }
 
+        if (error != XRtcError::kNOERROR) {
+            status = xrtc_err(error);
+        }
+
         XRtcEngineObserver* observer = XRtcGlobal::instance().observer();
         if (observer) {
             observer->video_source_stop_event(this, error);
@@ -145,7 +160,7 @@ bool VcmCapture::stop() {
     } else {
         _current_thread->BlockingCall(do_stop);
     }
-    return true;
+    return status;
 }
 
 void VcmCapture::apply_capability(
@@ -184,11 +199,11 @@ bool VcmCapture::init(size_t width, size_t height, int fps,
     return true;
 }
 
-bool VcmCapture::restart(size_t width, size_t height, int fps) {
-    auto do_restart = [this, width, height, fps]() -> bool {
+Rest<> VcmCapture::restart(size_t width, size_t height, int fps) {
+    auto do_restart = [this, width, height, fps]() -> Rest<> {
         if (!_vcm) {
             spdlog::error("视频采集模块未初始化, 无法 restart");
-            return false;
+            return xrtc_err(XRtcError::kVideoSourceNotInit);
         }
 
         const bool was_started = _vcm->CaptureStarted();
@@ -204,14 +219,14 @@ bool VcmCapture::restart(size_t width, size_t height, int fps) {
             _select_strategy));
 
         if (!was_started) {
-            return true;
+            return xrtc_ok();
         }
         if (_vcm->StartCapture(_capability) != 0) {
             spdlog::warn("restart 后 StartCapture 失败, device_id: {}",
                          resolve_id);
-            return false;
+            return xrtc_err(XRtcError::kVideoSourceStartFailed);
         }
-        return true;
+        return xrtc_ok();
     };
 
     if (_current_thread->IsCurrent()) {
@@ -220,32 +235,32 @@ bool VcmCapture::restart(size_t width, size_t height, int fps) {
     return _current_thread->BlockingCall(do_restart);
 }
 
-bool VcmCapture::device_switch(const std::string& device_id) {
+Rest<> VcmCapture::device_switch(const std::string& device_id) {
     if (device_id.empty()) {
         spdlog::warn("[vcm] device_switch ignored: empty device_id");
-        return false;
+        return xrtc_err(XRtcError::kInvalidParam);
     }
-    auto do_switch = [this, device_id]() -> bool {
+    auto do_switch = [this, device_id]() -> Rest<> {
         if (device_id == _device_id && _vcm) {
-            return true;
+            return xrtc_ok();
         }
         const bool was_started = _vcm && _vcm->CaptureStarted();
         release_vcm();
         if (!init(_width, _height, _fps, device_id)) {
             spdlog::error("[vcm] device_switch init failed: {}", device_id);
-            return false;
+            return xrtc_err(XRtcError::kVideoSourceNotInit);
         }
         _device_id = device_id;
         if (!was_started) {
-            return true;
+            return xrtc_ok();
         }
         if (_vcm->StartCapture(_capability) != 0) {
             spdlog::warn("[vcm] device_switch StartCapture failed: {}",
                          device_id);
-            return false;
+            return xrtc_err(XRtcError::kVideoSourceStartFailed);
         }
         spdlog::info("[vcm] switched camera to {}", device_id);
-        return true;
+        return xrtc_ok();
     };
 
     if (_current_thread->IsCurrent()) {
@@ -258,20 +273,24 @@ XRTCVideoFormat VcmCapture::capture_format() const {
     return {static_cast<int>(_width), static_cast<int>(_height), _fps};
 }
 
-bool VcmCapture::set_capture_request(const XRTCVideoFormat& requested) {
+Rest<> VcmCapture::set_capture_request(const XRTCVideoFormat& requested) {
     if (requested.width <= 0 || requested.height <= 0 || requested.fps <= 0) {
         spdlog::warn("set_capture_request ignored: invalid {}x{}@{}",
                      requested.width, requested.height, requested.fps);
-        return false;
+        return xrtc_err(XRtcError::kInvalidParam);
     }
     return restart(static_cast<size_t>(requested.width),
                    static_cast<size_t>(requested.height), requested.fps);
 }
 
 void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
-    //如果有track_source,将视频帧推入他
+    // 推流始终走 WebRTC；预览 ARGB 可关/降分辨率
     if (track_source_) {
         track_source_->PushFrame(frame);
+    }
+
+    if (!local_preview_enabled_.load(std::memory_order_relaxed)) {
+        return;
     }
 
     XRtcEngineObserver* observer = XRtcGlobal::instance().observer();
@@ -289,17 +308,41 @@ void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
         buffer = webrtc::I420Buffer::Rotate(*buffer, frame.rotation());
     }
 
-    const int width = buffer->width();
-    const int height = buffer->height();
+    int width = buffer->width();
+    int height = buffer->height();
     if (width <= 0 || height <= 0) {
         return;
     }
 
-    auto argb = std::make_shared<std::vector<uint8_t>>(
-        static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+    // 本地预览最长边压到 640，推流分辨率不变
+    constexpr int kMaxPreviewLongEdge = 640;
+    const int long_edge = std::max(width, height);
+    if (long_edge > kMaxPreviewLongEdge) {
+        int pw = width;
+        int ph = height;
+        if (width >= height) {
+            pw = kMaxPreviewLongEdge;
+            ph = std::max(2, height * kMaxPreviewLongEdge / width);
+        } else {
+            ph = kMaxPreviewLongEdge;
+            pw = std::max(2, width * kMaxPreviewLongEdge / height);
+        }
+        pw &= ~1;
+        ph &= ~1;
+        auto scaled = webrtc::I420Buffer::Create(pw, ph);
+        scaled->ScaleFrom(*buffer);
+        buffer = scaled;
+        width = pw;
+        height = ph;
+    }
+
+    auto argb = AcquireArgbBuffer(width, height);
+    if (!argb) {
+        return;
+    }
     libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(), buffer->DataU(),
                        buffer->StrideU(), buffer->DataV(), buffer->StrideV(),
-                       argb->data(), width * 4, width, height);
+                       argb.get(), width * 4, width, height);
 
     XRTCVideoFrame video_frame;
     video_frame.width = width;

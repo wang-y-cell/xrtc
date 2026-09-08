@@ -30,7 +30,7 @@ public:
         webrtc::scoped_refptr<webrtc::AudioDeviceModule> platform_adm);
 
     /// 切换播放设备（须最终在 worker 执行；已播放时会 Stop→Set→Init→Start）
-    static bool set_playout_device(
+    static Rest<> set_playout_device(
         webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm,
         const std::string& device_id);
 
@@ -40,15 +40,15 @@ public:
     AudioCapture& operator=(const AudioCapture&) = delete;
 
     /// 选麦 + 挂音量旁路, 不采集
-    bool open();
+    Rest<> open();
 
     /// open + 若尚未录音则启动录音（预览 / 会议手动开麦）
-    bool start() override;
-    bool stop() override;
-    bool device_switch(const std::string& device_id) override;
+    Rest<> start() override;
+    Rest<> stop() override;
+    Rest<> device_switch(const std::string& device_id) override;
 
     /// 强制停硬件录音（含 WebRTC 已启录的情况）；保持 open/旁路
-    bool StopHardwareRecording();
+    Rest<> StopHardwareRecording();
 
     /// 由 XrtcAudioDeviceModule::RecordedDataIsAvailable 旁路调用
     /// 这个就是从 ADM 获取到的音频数据，然后进行音量计算

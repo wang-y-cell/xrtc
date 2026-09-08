@@ -8,6 +8,7 @@
 
 #include "api/peer_connection_interface.h"
 #include "api/scoped_refptr.h"
+#include <internal/xrtc_result.h>
 #include <xrtc/xrtc_defines.h>
 
 namespace xrtc {
@@ -33,15 +34,18 @@ public:
         Callbacks callbacks);
     ~PeerConnectionHandler() override;
 
-    bool Init(const std::vector<XRTCIceServer>& ice_servers);
+    Rest<> Init(const std::vector<XRTCIceServer>& ice_servers);
     void Close();
 
     /// Close 后置 false；异步 observer 持有 shared_ptr 副本，避免 UAF
     std::shared_ptr<std::atomic<bool>> alive_flag() const { return alive_; }
 
-    bool AddTrack(
+    Rest<> AddTrack(
         webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
         const std::vector<std::string>& stream_ids);
+
+    /// 为视频 Sender 设置码率/帧率上限与降级策略（AddTrack 视频后调用）
+    void ConfigureVideoSend(int width, int height, int fps);
 
     void CreateOffer();
     void CreateAnswer();

@@ -4,9 +4,12 @@
 
 #include "api/jsep.h"
 #include "api/make_ref_counted.h"
+#include "api/media_stream_interface.h"
+#include "api/rtp_parameters.h"
 #include "api/rtp_sender_interface.h"
 #include "api/set_remote_description_observer_interface.h"
 #include "rtc_base/logging.h"
+#include <spdlog/spdlog.h>
 
 namespace xrtc {
 namespace {
@@ -173,10 +176,10 @@ PeerConnectionHandler::~PeerConnectionHandler() {
     Close();
 }
 
-bool PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers) {
-    //在构造函数指定,如果还是nullptr,则返回false
+Rest<> PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers) {
+    //在构造函数指定,如果还是nullptr,则返回错误
     if (!factory_) {
-        return false;
+        return xrtc_err(XRtcError::kPeerConnectionFailed);
     }
 
     //创建peerconnection是使用的配置结构体
@@ -211,10 +214,13 @@ bool PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers) 
     if (!result.ok()) {
         RTC_LOG(LS_ERROR) << "CreatePeerConnection failed: "
                           << result.error().message();
-        return false;
+        return xrtc_err(XRtcError::kPeerConnectionFailed);
     }
     pc_ = std::move(result.value());
-    return pc_ != nullptr;
+    if (!pc_) {
+        return xrtc_err(XRtcError::kPeerConnectionFailed);
+    }
+    return xrtc_ok();
 }
 
 void PeerConnectionHandler::Close() {
@@ -231,20 +237,77 @@ void PeerConnectionHandler::Close() {
     }
 }
 
-bool PeerConnectionHandler::AddTrack(
+Rest<> PeerConnectionHandler::AddTrack(
     webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
     const std::vector<std::string>& stream_ids) {
-    //如果peerconnection为空或者媒体轨道为空,则返回false
+    //如果peerconnection为空或者媒体轨道为空,则返回错误
     if (!pc_ || !track) {
-        return false;
+        return xrtc_err(XRtcError::kInvalidParam);
     }
-    //将媒体轨道添加到peerconnection中,返回一个结果,如果结果是ok的,则返回true
+    //将媒体轨道添加到peerconnection中
     auto result = pc_->AddTrack(track, stream_ids);
     if (!result.ok()) {
         RTC_LOG(LS_ERROR) << "AddTrack failed: " << result.error().message();
-        return false;
+        return xrtc_err(XRtcError::kPeerConnectionFailed);
     }
-    return true;
+    return xrtc_ok();
+}
+
+namespace {
+
+int EstimateVideoBitrateBps(int width, int height) {
+    const int pixels = (width > 0 && height > 0) ? (width * height) : (1280 * 720);
+    if (pixels <= 640 * 480) {
+        return 800 * 1000;
+    }
+    if (pixels <= 1280 * 720) {
+        return 1500 * 1000;
+    }
+    if (pixels <= 1920 * 1080) {
+        return 2500 * 1000;
+    }
+    return 3500 * 1000;
+}
+
+}  // namespace
+
+void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps) {
+    if (!pc_) {
+        return;
+    }
+    const int max_bitrate = EstimateVideoBitrateBps(width, height);
+    const double max_fps = fps > 0 ? static_cast<double>(fps) : 30.0;
+
+    for (const auto& sender : pc_->GetSenders()) {
+        auto track = sender->track();
+        if (!track ||
+            track->kind() != webrtc::MediaStreamTrackInterface::kVideoKind) {
+            continue;
+        }
+
+        auto* video =
+            static_cast<webrtc::VideoTrackInterface*>(track.get());
+        video->set_content_hint(
+            webrtc::VideoTrackInterface::ContentHint::kFluid);
+
+        webrtc::RtpParameters params = sender->GetParameters();
+        params.degradation_preference =
+            webrtc::DegradationPreference::BALANCED;
+        if (!params.encodings.empty()) {
+            params.encodings[0].max_bitrate_bps = max_bitrate;
+            params.encodings[0].max_framerate = max_fps;
+        }
+        const webrtc::RTCError err = sender->SetParameters(params);
+        if (!err.ok()) {
+            spdlog::warn("[pc] ConfigureVideoSend SetParameters failed: {}",
+                         err.message());
+        } else {
+            spdlog::info(
+                "[pc] ConfigureVideoSend {}x{}@{} max_bitrate={}bps", width,
+                height, static_cast<int>(max_fps), max_bitrate);
+        }
+        break;
+    }
 }
 
 void PeerConnectionHandler::CreateOffer() {

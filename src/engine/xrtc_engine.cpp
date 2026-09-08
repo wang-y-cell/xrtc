@@ -108,13 +108,13 @@ std::vector<XRTCDeviceInfo> XRtcEngine::get_playout_device_info() {
         });
 }
 
-bool XRtcEngine::set_playout_device(const std::string& device_id) {
+Rest<> XRtcEngine::set_playout_device(const std::string& device_id) {
     return XRtcGlobal::instance().api_thread()->BlockingCall(
-        [this, device_id]() -> bool {
+        [this, device_id]() -> Rest<> {
             // 保证 factory/worker 已就绪，再在 worker 上切播放设备
             if (!XRtcGlobal::instance().GetOrCreatePeerConnectionFactory()) {
                 spdlog::error("[engine] set_playout_device: no PC factory");
-                return false;
+                return xrtc_err(XRtcError::kMediaStartFailed);
             }
             return AudioCapture::set_playout_device(audio_device_, device_id);
         });
@@ -230,9 +230,9 @@ void XRtcEngine::join(const XRTCJoinConfig& config) {
     }
     // 进房前切好扬声器（仅当配置了 playout_device_id）
     if (!cfg.playout_device_id.empty()) {
-        if (!set_playout_device(cfg.playout_device_id)) {
-            spdlog::warn("[engine] join: set_playout_device failed id={}",
-                         cfg.playout_device_id);
+        if (auto st = set_playout_device(cfg.playout_device_id); !st) {
+            spdlog::warn("[engine] join: set_playout_device failed id={} err={}",
+                         cfg.playout_device_id, XRtcErrorToString(st.error()));
         }
     }
     //如果名称为空,使用默认名称
@@ -301,53 +301,59 @@ void XRtcEngine::mute_video(bool mute) {
     }
 }
 
-bool XRtcEngine::start_local_video() {
-    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> bool {
+Rest<> XRtcEngine::start_local_video() {
+    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> Rest<> {
         if (!call_session_ || !call_session_->active()) {
             spdlog::warn("[engine] start_local_video: not in call");
-            return false;
+            return xrtc_err(XRtcError::kNotInCall);
         }
-        if (!call_session_->StartLocalVideo()) {
-            spdlog::error("[engine] start_local_video: capture failed");
-            return false;
+        auto st = call_session_->StartLocalVideo();
+        if (!st) {
+            spdlog::error("[engine] start_local_video: {}",
+                          XRtcErrorToString(st.error()));
+            return st;
         }
         call_session_->MuteVideo(false);
-        return true;
+        return xrtc_ok();
     });
 }
 
-void XRtcEngine::stop_local_video() {
-    XRtcGlobal::instance().api_thread()->BlockingCall([this]() {
+Rest<> XRtcEngine::stop_local_video() {
+    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> Rest<> {
         if (!call_session_) {
-            return;
+            return xrtc_err(XRtcError::kNotInCall);
         }
         call_session_->StopLocalVideo();
         call_session_->MuteVideo(true);
+        return xrtc_ok();
     });
 }
 
-bool XRtcEngine::start_local_audio() {
-    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> bool {
+Rest<> XRtcEngine::start_local_audio() {
+    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> Rest<> {
         if (!call_session_ || !call_session_->active()) {
             spdlog::warn("[engine] start_local_audio: not in call");
-            return false;
+            return xrtc_err(XRtcError::kNotInCall);
         }
-        if (!call_session_->StartLocalAudio()) {
-            spdlog::error("[engine] start_local_audio: capture failed");
-            return false;
+        auto st = call_session_->StartLocalAudio();
+        if (!st) {
+            spdlog::error("[engine] start_local_audio: {}",
+                          XRtcErrorToString(st.error()));
+            return st;
         }
         call_session_->MuteAudio(false);
-        return true;
+        return xrtc_ok();
     });
 }
 
-void XRtcEngine::stop_local_audio() {
-    XRtcGlobal::instance().api_thread()->BlockingCall([this]() {
+Rest<> XRtcEngine::stop_local_audio() {
+    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> Rest<> {
         if (!call_session_) {
-            return;
+            return xrtc_err(XRtcError::kNotInCall);
         }
         call_session_->MuteAudio(true);
         call_session_->StopLocalAudio();
+        return xrtc_ok();
     });
 }
 

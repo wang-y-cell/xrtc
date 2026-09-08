@@ -81,6 +81,19 @@ struct XRTCJoinConfig {
     std::vector<XRTCIceServer> ice_servers;  /// 为空则使用默认 STUN
 };
 
+/// SDK / Rest<> 统一错误码
+enum class XRtcError {
+    kNOERROR = 0,
+    kVideoSourceNotInit = -999,
+    kVideoSourceStartFailed,
+    kAlreadyInCall,
+    kNotInCall,
+    kInvalidParam,
+    kSignalingFailed,
+    kPeerConnectionFailed,
+    kMediaStartFailed,
+};
+
 ///连接状态,包括新连接、连接中、连接成功、连接失败、连接关闭
 enum class XRTCConnectionState {
     kNew = 0,
@@ -98,10 +111,11 @@ struct XRTCRemoteUser {
 };
 
 // 预览用 ARGB 帧（小端内存布局为 B,G,R,A，对应 QImage::Format_ARGB32）
+// argb 来自 ArgbFramePool（utils::memory_pool 分档）；字节数 = width*height*4
 struct XRTCVideoFrame {
     int width = 0;
     int height = 0;
-    std::shared_ptr<std::vector<uint8_t>> argb;
+    std::shared_ptr<uint8_t> argb;
 };
 
 }  // namespace xrtc

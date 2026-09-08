@@ -148,26 +148,26 @@ std::vector<XRTCDeviceInfo> AudioCapture::get_playout_device_info(
     return out;
 }
 
-bool AudioCapture::set_playout_device(
+Rest<> AudioCapture::set_playout_device(
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm,
     const std::string& device_id) {
     if (!adm) {
-        return false;
+        return xrtc_err(XRtcError::kInvalidParam);
     }
     auto* worker = AdmWorker();
-    auto run = [adm, device_id]() -> bool {
+    auto run = [adm, device_id]() -> Rest<> {
         if (adm->Init() != 0) {
             spdlog::error("[audio-cap] ADM Init failed in set_playout_device");
-            return false;
+            return xrtc_err(XRtcError::kMediaStartFailed);
         }
         const int16_t total = adm->PlayoutDevices();
         if (total <= 0) {
             spdlog::error("[audio-cap] no playout devices");
-            return false;
+            return xrtc_err(XRtcError::kMediaStartFailed);
         }
         const int count = ClampDeviceCount(total);
         if (count <= 0) {
-            return false;
+            return xrtc_err(XRtcError::kMediaStartFailed);
         }
 
         int index = 0;
@@ -190,7 +190,7 @@ bool AudioCapture::set_playout_device(
             if (index < 0) {
                 spdlog::error("[audio-cap] playout device not found: {}",
                               device_id);
-                return false;
+                return xrtc_err(XRtcError::kInvalidParam);
             }
         }
 
@@ -200,7 +200,7 @@ bool AudioCapture::set_playout_device(
         }
         if (adm->SetPlayoutDevice(static_cast<uint16_t>(index)) != 0) {
             spdlog::error("[audio-cap] SetPlayoutDevice({}) failed", index);
-            return false;
+            return xrtc_err(XRtcError::kMediaStartFailed);
         }
         if (adm->InitSpeaker() != 0) {
             spdlog::warn("[audio-cap] InitSpeaker failed after SetPlayoutDevice");
@@ -208,16 +208,16 @@ bool AudioCapture::set_playout_device(
         if (was_playing) {
             if (adm->InitPlayout() != 0) {
                 spdlog::error("[audio-cap] InitPlayout failed after device switch");
-                return false;
+                return xrtc_err(XRtcError::kMediaStartFailed);
             }
             if (adm->StartPlayout() != 0) {
                 spdlog::error("[audio-cap] StartPlayout failed after device switch");
-                return false;
+                return xrtc_err(XRtcError::kMediaStartFailed);
             }
         }
         spdlog::info("[audio-cap] playout device index={} id={}", index,
                      device_id.empty() ? "(default/first)" : device_id);
-        return true;
+        return xrtc_ok();
     };
 
     if (worker && webrtc::Thread::Current() != worker) {
@@ -371,13 +371,13 @@ bool AudioCapture::stop_on_worker() {
     return true;
 }
 
-bool AudioCapture::StopHardwareRecording() {
+Rest<> AudioCapture::StopHardwareRecording() {
     // ADM 启停须在 worker；勿再绕 api，避免与 session 同线程死锁
     auto* worker = AdmWorker();
-    auto run = [this]() -> bool {
+    auto run = [this]() -> Rest<> {
         if (!adm_) {
             started_ = false;
-            return true;
+            return xrtc_ok();
         }
         adm_->SetCaptureEnabled(false);
         if (adm_->Recording()) {
@@ -385,7 +385,7 @@ bool AudioCapture::StopHardwareRecording() {
         }
         started_ = false;
         spdlog::info("[audio-cap] hardware recording stopped (keep open)");
-        return true;
+        return xrtc_ok();
     };
     if (worker && webrtc::Thread::Current() != worker) {
         return worker->BlockingCall(run);
@@ -393,65 +393,67 @@ bool AudioCapture::StopHardwareRecording() {
     return run();
 }
 
-bool AudioCapture::open() {
+Rest<> AudioCapture::open() {
     auto* api = ApiThread();
     if (api && webrtc::Thread::Current() != api) {
         return api->BlockingCall([this]() { return open(); });
     }
     if (opened_) {
-        return true;
+        return xrtc_ok();
     }
     if (!adm_) {
-        return false;
+        return xrtc_err(XRtcError::kMediaStartFailed);
     }
     if (!XRtcGlobal::instance().GetOrCreatePeerConnectionFactory()) {
         spdlog::error("[audio-cap] PeerConnectionFactory unavailable");
-        return false;
+        return xrtc_err(XRtcError::kMediaStartFailed);
     }
     auto* worker = AdmWorker();
-    if (worker) {
-        return worker->BlockingCall([this]() { return open_on_worker(); });
-    }
-    return open_on_worker();
+    const bool ok = worker
+                        ? worker->BlockingCall([this]() { return open_on_worker(); })
+                        : open_on_worker();
+    return ok ? xrtc_ok() : xrtc_err(XRtcError::kMediaStartFailed);
 }
 
-bool AudioCapture::start() {
+Rest<> AudioCapture::start() {
     auto* api = ApiThread();
     if (api && webrtc::Thread::Current() != api) {
         return api->BlockingCall([this]() { return start(); });
     }
     //如果当前的麦克风在跑了,就返回
     if (started_ && adm_ && adm_->Recording()) {
-        return true;
+        return xrtc_ok();
     }
     if (!adm_) {
-        return false;
+        return xrtc_err(XRtcError::kMediaStartFailed);
     }
     if (!XRtcGlobal::instance().GetOrCreatePeerConnectionFactory()) {
         spdlog::error("[audio-cap] PeerConnectionFactory unavailable");
-        return false;
+        return xrtc_err(XRtcError::kMediaStartFailed);
     }
     auto* worker = AdmWorker();
-    if (worker) {
-        return worker->BlockingCall(
-            [this]() { return start_recording_on_worker(); });
-    }
-    return start_recording_on_worker();
+    const bool ok =
+        worker ? worker->BlockingCall(
+                     [this]() { return start_recording_on_worker(); })
+               : start_recording_on_worker();
+    return ok ? xrtc_ok() : xrtc_err(XRtcError::kMediaStartFailed);
 }
 
-bool AudioCapture::stop() {
+Rest<> AudioCapture::stop() {
     auto* api = ApiThread();
     if (api && webrtc::Thread::Current() != api) {
         return api->BlockingCall([this]() { return stop(); });
     }
     auto* worker = AdmWorker();
     if (worker && webrtc::Thread::Current() != worker) {
-        return worker->BlockingCall([this]() { return stop_on_worker(); });
+        worker->BlockingCall([this]() { return stop_on_worker(); });
+        return xrtc_ok();
     }
-    return stop_on_worker();
+    stop_on_worker();
+    return xrtc_ok();
 }
 
-bool AudioCapture::device_switch(const std::string& device_id) {
+Rest<> AudioCapture::device_switch(const std::string& device_id) {
     auto* api = ApiThread();
     if (api && webrtc::Thread::Current() != api) {
         return api->BlockingCall(
@@ -460,10 +462,10 @@ bool AudioCapture::device_switch(const std::string& device_id) {
     const bool was_recording = started_;
     const bool was_open = opened_;
     if (was_recording || was_open) {
-        stop();
+        (void)stop();
     }
     if (!apply_device(device_id)) {
-        return false;
+        return xrtc_err(XRtcError::kInvalidParam);
     }
     if (was_recording) {
         return start();
@@ -471,7 +473,7 @@ bool AudioCapture::device_switch(const std::string& device_id) {
     if (was_open) {
         return open();
     }
-    return true;
+    return xrtc_ok();
 }
 
 void AudioCapture::OnAdmCaptureData(const void* audio_samples,

@@ -120,6 +120,30 @@ bool XRtcEngine::set_playout_device(const std::string& device_id) {
         });
 }
 
+bool XRtcEngine::set_audio_device(const std::string& device_id) {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [this, device_id]() -> bool {
+            if (!call_session_) {
+                spdlog::warn(
+                    "[engine] set_audio_device: no call session, ignore");
+                return false;
+            }
+            return call_session_->SwitchAudioDevice(device_id);
+        });
+}
+
+bool XRtcEngine::set_video_device(const std::string& device_id) {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [this, device_id]() -> bool {
+            if (!call_session_) {
+                spdlog::warn(
+                    "[engine] set_video_device: no call session, ignore");
+                return false;
+            }
+            return call_session_->SwitchVideoDevice(device_id);
+        });
+}
+
 std::vector<XRTCVideoFormat> XRtcEngine::get_video_capabilities(
     const std::string& device_id) {
     return XRtcGlobal::instance().api_thread()->BlockingCall(

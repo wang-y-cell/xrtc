@@ -4,6 +4,7 @@
 #include <xrtc/xrtc_defines.h>
 #include <media/video_track_source.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -44,15 +45,15 @@ public:
     VcmCapture(const VcmCapture&) = delete;
     VcmCapture& operator=(const VcmCapture&) = delete;
 
-    bool start() override;
-    bool stop() override;
-    bool device_switch(const std::string& device_id) override;
+    Rest<> start() override;
+    Rest<> stop() override;
+    Rest<> device_switch(const std::string& device_id) override;
 
     /// 当前实际采集格式（可能经设备能力匹配后与请求不同）
     XRTCVideoFormat capture_format() const;
 
     /// 修改期望采集格式；采集中会按策略重选能力并重启
-    bool set_capture_request(const XRTCVideoFormat& requested);
+    Rest<> set_capture_request(const XRTCVideoFormat& requested);
 
     /**
      * @brief 视频采集数据回调
@@ -67,8 +68,14 @@ public:
     void set_track_source(
         webrtc::scoped_refptr<XrtcVideoTrackSource> track_source);
 
+    /// 是否向 Observer 输出本地预览 ARGB（推流 PushFrame 不受影响）
+    void set_local_preview_enabled(bool enabled);
+    bool local_preview_enabled() const {
+        return local_preview_enabled_.load(std::memory_order_relaxed);
+    }
+
     /// 按策略重选能力并重启采集（会话中途改分辨率用）
-    bool restart(size_t width, size_t height, int fps);
+    Rest<> restart(size_t width, size_t height, int fps);
 
     size_t width() const { return _width; }
     size_t height() const { return _height; }
@@ -95,6 +102,7 @@ private:
     webrtc::scoped_refptr<webrtc::VideoCaptureModule> _vcm;
     webrtc::VideoCaptureCapability _capability;
     webrtc::scoped_refptr<XrtcVideoTrackSource> track_source_;
+    std::atomic<bool> local_preview_enabled_{true};
 };
 
 }  // namespace xrtc

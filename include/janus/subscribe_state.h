@@ -11,12 +11,15 @@ namespace xrtc {
 /// Janus 订阅去重状态（可单测）：pending attach / feed→handle 映射
 class SubscribeState {
 public:
-    /// 开始订阅：已订阅或 attach 中返回 false
+    /// 开始订阅：已订阅或 attach 中返回 false,检查是否存在重复订阅
+    /// 没有重复订阅就返回true,否则返回false
     bool TryBeginSubscribe(uint64_t feed_id) {
         std::lock_guard<std::mutex> lock(mutex_);
+        // 如果已经订阅或正在attach中，则返回false
         if (feed_to_handle_.count(feed_id) || pending_.count(feed_id)) {
             return false;
         }
+        // 没有重复订阅,这是第一次订阅, 将feed_id加入到等待attach的集合中
         pending_.insert(feed_id);
         return true;
     }
@@ -57,6 +60,7 @@ public:
         return it->second;
     }
 
+    /// 通过房间插件的handle_id获得对应feed_id,这个feed可能是我们作为发布者加入房间的,也可能是我们作为订阅者加入房间的对端feed
     std::optional<uint64_t> FeedForHandle(uint64_t handle_id) const {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& kv : feed_to_handle_) {
@@ -95,8 +99,8 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::unordered_set<uint64_t> pending_;
-    std::unordered_map<uint64_t, uint64_t> feed_to_handle_;
+    std::unordered_set<uint64_t> pending_; // 等待attach的feed_id集合
+    std::unordered_map<uint64_t, uint64_t> feed_to_handle_; // feed_id到handle_id的映射
 };
 
 }  // namespace xrtc

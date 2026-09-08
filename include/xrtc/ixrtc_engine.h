@@ -3,22 +3,11 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <internal/xrtc_result.h>
 #include <xrtc/xrtc_defines.h>
 #include <xrtc/ixrtc_media_source.h>
 
 namespace xrtc {
-
-enum class XRtcError {
-    kNOERROR = 0,
-    kVideoSourceNotInit = -999,
-    kVideoSourceStartFailed,
-    kAlreadyInCall,
-    kNotInCall,
-    kInvalidParam,
-    kSignalingFailed,
-    kPeerConnectionFailed,
-    kMediaStartFailed,
-};
 
 class XRtcEngineObserver {
 public:
@@ -65,11 +54,11 @@ public:
     /// 枚举扬声器 / 播放设备（与麦克风列表分开）
     virtual std::vector<XRTCDeviceInfo> get_playout_device_info() = 0;
     /// 选择远端音频播放设备；空 id 表示默认。可在进房前或会议中调用
-    virtual bool set_playout_device(const std::string& device_id) = 0;
+    virtual Rest<> set_playout_device(const std::string& device_id) = 0;
     /// 选择麦克风；会中有采集器则立即切换，否则记住供下次 StartLocalAudio / join
-    virtual bool set_audio_device(const std::string& device_id) = 0;
+    virtual Rest<> set_audio_device(const std::string& device_id) = 0;
     /// 选择摄像头；会中有采集器则立即切换，否则记住供下次 StartLocalVideo / join
-    virtual bool set_video_device(const std::string& device_id) = 0;
+    virtual Rest<> set_video_device(const std::string& device_id) = 0;
 
     /// 枚举摄像头支持的采集格式（可能含重复分辨率、不同 pixel format）
     virtual std::vector<XRTCVideoFormat> get_video_capabilities(
@@ -106,14 +95,14 @@ public:
     virtual void mute_audio(bool mute) = 0;
     virtual void mute_video(bool mute) = 0;
 
-    /// 会议内：开采集并开始推流；失败返回 false（未在通话中或采集失败）
-    virtual bool start_local_video() = 0;
+    /// 会议内：开采集并开始推流；失败见 Rest<>（未在通话中或采集失败）
+    virtual Rest<> start_local_video() = 0;
     /// 会议内：停推流并停采集
-    virtual void stop_local_video() = 0;
-    /// 会议内：开麦采集并开始推流；失败返回 false
-    virtual bool start_local_audio() = 0;
+    virtual Rest<> stop_local_video() = 0;
+    /// 会议内：开麦采集并开始推流；失败见 Rest<>
+    virtual Rest<> start_local_audio() = 0;
     /// 会议内：停推流并停硬件录音
-    virtual void stop_local_audio() = 0;
+    virtual Rest<> stop_local_audio() = 0;
 };
 
 IXRtcEngine* create_xrtc_engine(XRtcEngineObserver* observer);

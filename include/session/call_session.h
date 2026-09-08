@@ -6,7 +6,7 @@
 
 #include "api/scoped_refptr.h"
 #include "api/media_stream_interface.h"
-#include "concurrency/signal_and_slots/signal_and_slots.h"
+#include "concurrency/signal_and_slots.h"
 #include <janus/janus_client.h>
 #include <media/remote_video_sink.h>
 #include <media/audio_capture.h>
@@ -44,16 +44,16 @@ public:
     void MuteVideo(bool mute);
 
     /// 仅开启/停止本地视频硬件采集（不含 mute）
-    bool StartLocalVideo();
-    bool StopLocalVideo();
+    Rest<> StartLocalVideo();
+    Rest<> StopLocalVideo();
     /// 仅开启/停止本地音频硬件录音（不含 mute）
-    bool StartLocalAudio();
-    bool StopLocalAudio();
+    Rest<> StartLocalAudio();
+    Rest<> StopLocalAudio();
 
     /// 切换麦克风；更新 config，若采集器已创建则 device_switch
-    bool SwitchAudioDevice(const std::string& device_id);
+    Rest<> SwitchAudioDevice(const std::string& device_id);
     /// 切换摄像头；更新 config，若采集器已创建则 device_switch
-    bool SwitchVideoDevice(const std::string& device_id);
+    Rest<> SwitchVideoDevice(const std::string& device_id);
 
     bool local_video_capturing() const { return local_video_capturing_; }
     bool local_audio_capturing() const { return local_audio_capturing_; }
@@ -82,7 +82,7 @@ private:
     slots_t<> onPublisherLeft(uint64_t feed_id, const std::string& display);
     //收到janus的sdp offer,设置本地sdp描述
     slots_t<> onPublisherAnswer(const JanusJsep& jsep);
-    //设置本地sdp描述,并发送给janus
+    //设置本地sdp描述,并发送给janus,作为订阅者
     slots_t<> onSubscriberOffer(uint64_t feed_id, uint64_t handle_id,
                                 const JanusJsep& offer);
     slots_t<> onRemoteCandidate(uint64_t handle_id, const std::string& mid,
@@ -90,7 +90,7 @@ private:
     slots_t<> onJanusError(const std::string& err);
     slots_t<> onJanusDestroyed();
     ///在 Janus 进房成功后，准备本地轨与采集器（默认不开采，由 StartLocal* 手动开）
-    XRtcStatus ensureLocalMedia();
+    Rest<> ensureLocalMedia();
     /// 进房后默认禁推流，等待上层 start_local_*
     void muteLocalTracks(bool mute);
     ///设置peerconnectionHandler回调函数,创建peerconnectionHandler对象,调用init函数创建peerconnection对象,并将视频轨道和音频轨道加入进去

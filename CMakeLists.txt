@@ -103,8 +103,11 @@ else()
     set(_XRTC_SPDLOG_LIB spdlog_header)
 endif()
 
-# ---------- utils framework (header-only: signal / result / concurrency) ----------
-add_subdirectory(utils EXCLUDE_FROM_ALL)
+# ---------- utils framework（安装式 header-only 包：utils/include + utils/lib/cmake）----------
+find_package(Threads REQUIRED)
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/utils")
+find_package(utils REQUIRED CONFIG)
+message(STATUS "utils found: ${utils_DIR}")
 
 # ---------- Boost (Beast/Asio header-only WebSocket) ----------
 # 路径由外部传入：cmake -DBoost_ROOT=... 或 python build.py --boost_path=...
@@ -136,6 +139,7 @@ add_library(xrtc STATIC
     src/media/audio_capture.cpp
     src/media/xrtc_audio_device_module.cpp
     src/media/video_capability_selector.cpp
+    src/media/argb_frame_pool.cpp
     src/session/call_session.cpp
     src/janus/websocket_transport.cpp
     src/janus/janus_client.cpp
@@ -153,8 +157,8 @@ target_include_directories(xrtc
 target_link_libraries(xrtc
     PUBLIC
         webrtc
-    PRIVATE
         utils::utils
+    PRIVATE
         ${_XRTC_SPDLOG_LIB}
         nlohmann_json
         Boost::headers
@@ -263,7 +267,8 @@ message(STATUS "Qt6 ${Qt6_VERSION} for demo: ${QT6_ROOT}")
 qt_standard_project_setup()
 
 qt_add_executable(webrtc_test
-    WIN32 MACOSX_BUNDLE
+    #WIN32 
+    MACOSX_BUNDLE
     demo/main.cpp
     demo/widget.cpp
     demo/widget.h

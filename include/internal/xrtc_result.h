@@ -2,20 +2,38 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 
-#include "reliability/result/expected.h"
-#include <xrtc/ixrtc_engine.h>
+#include "reliability/expected.h"
+#include <xrtc/xrtc_defines.h>
 
 namespace xrtc {
 
+/// 统一可失败返回：utils::result<T, XRtcError>；无值操作用 Rest<> / Rest<void>
+template <class T = void>
+using Rest = utils::result<T, XRtcError>;
+
 template <class T>
-using XRtcResult = utils::expected<T, XRtcError>;
+using XRtcResult = Rest<T>;
 
-using XRtcStatus = utils::expected<void, XRtcError>;
+using XRtcStatus = Rest<>;
 
-inline XRtcStatus xrtc_ok() { return utils::ok<XRtcError>(); }
+inline Rest<> xrtc_ok() { return {}; }
 
-inline auto xrtc_err(XRtcError e) { return utils::err(e); }
+template <class T>
+inline Rest<T> xrtc_ok(T&& value) {
+    return Rest<T>(std::forward<T>(value));
+}
+
+/// 失败：用 unexpected(E)，勿用 utils::err(枚举)（会变成 error_info<E>）
+inline Rest<> xrtc_err(XRtcError e) {
+    return Rest<>(utils::unexpect, e);
+}
+
+template <class T>
+inline Rest<T> xrtc_err_t(XRtcError e) {
+    return Rest<T>(utils::unexpect, e);
+}
 
 inline std::string_view XRtcErrorToString(XRtcError error) {
     switch (error) {

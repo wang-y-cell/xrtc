@@ -11,7 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "concurrency/signal_and_slots/signal_and_slots.h"
+#include "concurrency/signal_and_slots.h"
 #include <janus/websocket_transport.h>
 #include <janus/subscribe_state.h>
 #include <xrtc/xrtc_defines.h>
@@ -414,7 +414,7 @@ public:
     utils::signal<> destroyed{this};
 
     //连接janus服务器,websocket完成,可以发送和接收数据
-    XRtcStatus Connect(const XRTCJoinConfig& config);
+    Rest<> Connect(const XRTCJoinConfig& config);
     void Disconnect();
 
 	///发送offer给janus服务器,将客户端打包的sdp发送给janus服务器
@@ -504,7 +504,7 @@ private:
     //加入janus的配置
     XRTCJoinConfig config_;
 
-	///会话id,发送create之后,janus发送响应中包含的id,将这个id赋值给这个id
+	///会话id,发送create之后,janus发送响应中包含的id,将这个id赋值给这个id,表示这个会话的唯一id
     uint64_t session_id_ = 0;
     ///发布者句柄,发送attach 使用videoroom插件之后,janus发送响应中包含的id,将这个id赋值给这个句柄
 	///这是本地的发布者句柄,表示一个连接

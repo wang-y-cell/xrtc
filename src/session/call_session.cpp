@@ -2,10 +2,11 @@
 
 #include "api/audio_options.h"
 #include "api/video/i420_buffer.h"
-#include "api/video/video_frame.h"
+#include "api/video/video_source_interface.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
 #include <engine/xrtc_global.h>
+#include <media/argb_frame_pool.h>
 #include <media/xrtc_audio_device_module.h>
 #include <spdlog/spdlog.h>
 #include <vector>
@@ -171,12 +172,11 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                 XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
             auto pc =
                 std::make_unique<PeerConnectionHandler>(factory, std::move(pcb));
-            if (!pc->Init(config_.ice_servers)) {
-                spdlog::error("[session] subscriber pc init failed feed={}",
-                              feed_id);
+            if (auto st = pc->Init(config_.ice_servers); !st) {
+                spdlog::error("[session] subscriber pc init failed feed={} err={}",
+                              feed_id, XRtcErrorToString(st.error()));
                 if (!life_.join_notified) {
-                    failJoin(XRtcError::kPeerConnectionFailed,
-                             "subscriber pc init failed");
+                    failJoin(st.error(), "subscriber pc init failed");
                 }
                 return;
             }
@@ -383,6 +383,10 @@ void CallSession::MuteVideo(bool mute) {
         if (publisher_pc_) {
             publisher_pc_->MuteVideo(mute);
         }
+        // mute 时仍可能在采：关掉预览 ARGB，推流由 track enable 控制
+        if (capture_) {
+            capture_->set_local_preview_enabled(!mute && local_video_capturing_);
+        }
     };
     auto* api = XRtcGlobal::instance().api_thread();
     if (api && webrtc::Thread::Current() != api) {
@@ -406,19 +410,22 @@ void CallSession::muteLocalTracks(bool mute) {
     }
 }
 
-bool CallSession::StartLocalVideo() {
-    auto run = [this]() -> bool {
+Rest<> CallSession::StartLocalVideo() {
+    auto run = [this]() -> Rest<> {
         if (!capture_) {
             spdlog::error("[session] StartLocalVideo: capture not ready");
-            return false;
+            return xrtc_err(XRtcError::kVideoSourceNotInit);
         }
-        if (!capture_->start()) {
-            spdlog::error("[session] StartLocalVideo: capture start failed");
-            return false;
+        capture_->set_local_preview_enabled(true);
+        auto st = capture_->start();
+        if (!st) {
+            spdlog::error("[session] StartLocalVideo: capture start failed: {}",
+                          XRtcErrorToString(st.error()));
+            return st;
         }
         local_video_capturing_ = true;
         spdlog::info("[session] local video capture started");
-        return true;
+        return xrtc_ok();
     };
     auto* api = XRtcGlobal::instance().api_thread();
     if (api && webrtc::Thread::Current() != api) {
@@ -427,8 +434,8 @@ bool CallSession::StartLocalVideo() {
     return run();
 }
 
-bool CallSession::StopLocalVideo() {
-    auto run = [this]() -> bool {
+Rest<> CallSession::StopLocalVideo() {
+    auto run = [this]() -> Rest<> {
         // 关采集前推一帧黑图，清本地预览并避免远端卡在最后一帧
         if (video_source_) {
             int w = config_.width > 0 ? config_.width : 640;
@@ -453,25 +460,27 @@ bool CallSession::StopLocalVideo() {
             video_source_->PushFrame(frame);
 
             if (auto* obs = XRtcGlobal::instance().observer()) {
-                auto argb = std::make_shared<std::vector<uint8_t>>(
-                    static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-                libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(),
-                                   buffer->DataU(), buffer->StrideU(),
-                                   buffer->DataV(), buffer->StrideV(),
-                                   argb->data(), w * 4, w, h);
-                XRTCVideoFrame vf;
-                vf.width = w;
-                vf.height = h;
-                vf.argb = std::move(argb);
-                obs->on_video_frame(capture_.get(), vf);
+                auto argb = AcquireArgbBuffer(w, h);
+                if (argb) {
+                    libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(),
+                                       buffer->DataU(), buffer->StrideU(),
+                                       buffer->DataV(), buffer->StrideV(),
+                                       argb.get(), w * 4, w, h);
+                    XRTCVideoFrame vf;
+                    vf.width = w;
+                    vf.height = h;
+                    vf.argb = std::move(argb);
+                    obs->on_video_frame(capture_.get(), vf);
+                }
             }
         }
         if (capture_) {
-            capture_->stop();
+            capture_->set_local_preview_enabled(false);
+            (void)capture_->stop();
         }
         local_video_capturing_ = false;
         spdlog::info("[session] local video capture stopped");
-        return true;
+        return xrtc_ok();
     };
     auto* api = XRtcGlobal::instance().api_thread();
     if (api && webrtc::Thread::Current() != api) {
@@ -480,19 +489,21 @@ bool CallSession::StopLocalVideo() {
     return run();
 }
 
-bool CallSession::StartLocalAudio() {
-    auto run = [this]() -> bool {
+Rest<> CallSession::StartLocalAudio() {
+    auto run = [this]() -> Rest<> {
         if (!audio_capture_) {
             spdlog::error("[session] StartLocalAudio: audio_capture not ready");
-            return false;
+            return xrtc_err(XRtcError::kMediaStartFailed);
         }
-        if (!audio_capture_->start()) {
-            spdlog::error("[session] StartLocalAudio: start failed");
-            return false;
+        auto st = audio_capture_->start();
+        if (!st) {
+            spdlog::error("[session] StartLocalAudio: start failed: {}",
+                          XRtcErrorToString(st.error()));
+            return st;
         }
         local_audio_capturing_ = true;
         spdlog::info("[session] local audio capture started");
-        return true;
+        return xrtc_ok();
     };
     auto* api = XRtcGlobal::instance().api_thread();
     if (api && webrtc::Thread::Current() != api) {
@@ -501,14 +512,14 @@ bool CallSession::StartLocalAudio() {
     return run();
 }
 
-bool CallSession::StopLocalAudio() {
-    auto run = [this]() -> bool {
+Rest<> CallSession::StopLocalAudio() {
+    auto run = [this]() -> Rest<> {
         if (audio_capture_) {
-            audio_capture_->StopHardwareRecording();
+            (void)audio_capture_->StopHardwareRecording();
         }
         local_audio_capturing_ = false;
         spdlog::info("[session] local audio capture stopped");
-        return true;
+        return xrtc_ok();
     };
     auto* api = XRtcGlobal::instance().api_thread();
     if (api && webrtc::Thread::Current() != api) {
@@ -517,11 +528,11 @@ bool CallSession::StopLocalAudio() {
     return run();
 }
 
-bool CallSession::SwitchAudioDevice(const std::string& device_id) {
-    auto run = [this, device_id]() -> bool {
+Rest<> CallSession::SwitchAudioDevice(const std::string& device_id) {
+    auto run = [this, device_id]() -> Rest<> {
         if (device_id.empty()) {
             spdlog::warn("[session] SwitchAudioDevice: empty device_id");
-            return false;
+            return xrtc_err(XRtcError::kInvalidParam);
         }
         config_.audio_device_id = device_id;
         if (!audio_capture_) {
@@ -529,16 +540,16 @@ bool CallSession::SwitchAudioDevice(const std::string& device_id) {
                 "[session] SwitchAudioDevice: remembered id={} (capture not "
                 "ready)",
                 device_id);
-            return true;
+            return xrtc_ok();
         }
-        const bool ok = audio_capture_->device_switch(device_id);
-        if (!ok) {
-            spdlog::error("[session] SwitchAudioDevice failed id={}",
-                          device_id);
+        auto st = audio_capture_->device_switch(device_id);
+        if (!st) {
+            spdlog::error("[session] SwitchAudioDevice failed id={} err={}",
+                          device_id, XRtcErrorToString(st.error()));
         } else {
             spdlog::info("[session] SwitchAudioDevice ok id={}", device_id);
         }
-        return ok;
+        return st;
     };
     auto* api = XRtcGlobal::instance().api_thread();
     if (api && webrtc::Thread::Current() != api) {
@@ -547,11 +558,11 @@ bool CallSession::SwitchAudioDevice(const std::string& device_id) {
     return run();
 }
 
-bool CallSession::SwitchVideoDevice(const std::string& device_id) {
-    auto run = [this, device_id]() -> bool {
+Rest<> CallSession::SwitchVideoDevice(const std::string& device_id) {
+    auto run = [this, device_id]() -> Rest<> {
         if (device_id.empty()) {
             spdlog::warn("[session] SwitchVideoDevice: empty device_id");
-            return false;
+            return xrtc_err(XRtcError::kInvalidParam);
         }
         config_.video_device_id = device_id;
         if (!capture_) {
@@ -559,16 +570,16 @@ bool CallSession::SwitchVideoDevice(const std::string& device_id) {
                 "[session] SwitchVideoDevice: remembered id={} (capture not "
                 "ready)",
                 device_id);
-            return true;
+            return xrtc_ok();
         }
-        const bool ok = capture_->device_switch(device_id);
-        if (!ok) {
-            spdlog::error("[session] SwitchVideoDevice failed id={}",
-                          device_id);
+        auto st = capture_->device_switch(device_id);
+        if (!st) {
+            spdlog::error("[session] SwitchVideoDevice failed id={} err={}",
+                          device_id, XRtcErrorToString(st.error()));
         } else {
             spdlog::info("[session] SwitchVideoDevice ok id={}", device_id);
         }
-        return ok;
+        return st;
     };
     auto* api = XRtcGlobal::instance().api_thread();
     if (api && webrtc::Thread::Current() != api) {
@@ -577,7 +588,7 @@ bool CallSession::SwitchVideoDevice(const std::string& device_id) {
     return run();
 }
 
-XRtcStatus CallSession::ensureLocalMedia() {
+Rest<> CallSession::ensureLocalMedia() {
     //WebRTC 全局工厂，用来创建 AudioTrack、VideoTrack 等。拿不到就返回 kMediaStartFailed
     auto factory = XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
     if (!factory) {
@@ -619,10 +630,11 @@ XRtcStatus CallSession::ensureLocalMedia() {
         if (!audio_capture_) {
             return xrtc_err(XRtcError::kMediaStartFailed);
         }
-        if (!audio_capture_->open()) {
+        auto open_st = audio_capture_->open();
+        if (!open_st) {
             spdlog::error("[session] AudioCapture open failed, device_id={}",
                           config_.audio_device_id);
-            return xrtc_err(XRtcError::kMediaStartFailed);
+            return open_st;
         }
     }
 
@@ -698,22 +710,24 @@ void CallSession::createPublisherPc() {
     auto factory = XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
     publisher_pc_ =
         std::make_unique<PeerConnectionHandler>(factory, std::move(pcb));
-    if (!publisher_pc_->Init(config_.ice_servers)) {
+    if (auto st = publisher_pc_->Init(config_.ice_servers); !st) {
         publisher_pc_.reset();
-        failJoin(XRtcError::kPeerConnectionFailed, "publisher pc init failed");
+        failJoin(st.error(), "publisher pc init failed");
         return;
     }
 
-    if (!publisher_pc_->AddTrack(audio_track_, {"stream0"})) {
+    if (auto st = publisher_pc_->AddTrack(audio_track_, {"stream0"}); !st) {
         publisher_pc_.reset();
-        failJoin(XRtcError::kPeerConnectionFailed, "add audio track failed");
+        failJoin(st.error(), "add audio track failed");
         return;
     }
-    if (!publisher_pc_->AddTrack(video_track_, {"stream0"})) {
+    if (auto st = publisher_pc_->AddTrack(video_track_, {"stream0"}); !st) {
         publisher_pc_.reset();
-        failJoin(XRtcError::kPeerConnectionFailed, "add video track failed");
+        failJoin(st.error(), "add video track failed");
         return;
     }
+    publisher_pc_->ConfigureVideoSend(config_.width, config_.height,
+                                      config_.fps);
     // 默认禁推流；WebRTC 可能已 StartRecording，立即停掉等手动开麦
     muteLocalTracks(true);
     if (audio_capture_) {
@@ -829,7 +843,15 @@ void CallSession::attachRemoteTrack(
                 obs->on_remote_video_frame(id, frame);
             }
         });
-    video->AddOrUpdateSink(att.sink.get(), webrtc::VideoSinkWants());
+    video->AddOrUpdateSink(att.sink.get(), [] {
+        webrtc::VideoSinkWants wants;
+        // 远端渲染限到约 720p，避免多路全分辨率解码+ARGB
+        wants.max_pixel_count = 1280 * 720;
+        wants.target_pixel_count = 960 * 540;
+        wants.max_framerate_fps = 30;
+        wants.rotation_applied = true;
+        return wants;
+    }());
     remote_videos_[feed_id] = std::move(att);
 }
 

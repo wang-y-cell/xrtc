@@ -38,6 +38,17 @@ const char* ConnectionStateName(xrtc::XRTCConnectionState state) {
 }
 }  // namespace
 
+bool Widget::handle_rest(const xrtc::Rest<>& st, const QString& fail_text) {
+    if (st) {
+        return true;
+    }
+    const auto detail =
+        QString::fromUtf8(xrtc::XRtcErrorToString(st.error()).data());
+    ui->status_label->setText(fail_text + detail);
+    spdlog::warn("[ui] {} {}", fail_text.toStdString(), detail.toStdString());
+    return false;
+}
+
 /**
  * @brief 构造函数
  * 创建 XRTC 引擎（以本窗口作为观察者接收回调），
@@ -113,7 +124,8 @@ void Widget::on_video_request_changed() {
         video_config.fps = request.format.fps;
         video_config.select_strategy = request.strategy;
         video_source = engine->create_video_source(video_config);
-        if (video_source && video_source->start()) {
+        if (video_source && handle_rest(video_source->start(),
+                                        QString::fromUtf8("状态: 预览启动失败: "))) {
             const auto actual = engine->select_video_format(
                 device_id, request.format, request.strategy);
             ui->label_actual_format->setText(
@@ -179,9 +191,11 @@ void Widget::init_preview() {
 void Widget::clear_preview() {
     {
         std::lock_guard<std::mutex> lock(preview_mutex_);
-        pending_preview_ = QImage();
+        pending_preview_ = {};
         preview_scheduled_ = false;
     }
+    last_preview_fit_w_ = 0;
+    last_preview_fit_h_ = 0;
     if (preview_item_) {
         preview_item_->setPixmap(QPixmap());
     }
@@ -250,6 +264,7 @@ void Widget::remove_remote_view(uint64_t feed_id) {
         std::lock_guard<std::mutex> lock(remote_mutex_);
         remote_pending_.erase(feed_id);
     }
+    remote_last_fit_size_.erase(feed_id);
 
     auto it = remote_views_.find(feed_id);
     if (it == remote_views_.end()) {
@@ -270,6 +285,7 @@ void Widget::clear_all_remote_views() {
         std::lock_guard<std::mutex> lock(remote_mutex_);
         remote_pending_.clear();
     }
+    remote_last_fit_size_.clear();
 
     for (auto& [feed_id, remote] : remote_views_) {
         (void)feed_id;
@@ -307,8 +323,8 @@ void Widget::on_speaker_changed(int index) {
         index >= static_cast<int>(playout_devices_.size())) {
         return;
     }
-    if (!engine->set_playout_device(playout_devices_[index].device_id)) {
-        ui->status_label->setText(QString::fromUtf8("状态: 切换扬声器失败"));
+    if (!handle_rest(engine->set_playout_device(playout_devices_[index].device_id),
+                     QString::fromUtf8("状态: 切换扬声器失败: "))) {
         return;
     }
     ui->status_label->setText(
@@ -398,9 +414,17 @@ void Widget::start_video_source() {
                     .arg(actual.height)
                     .arg(actual.fps));
         }
-        video_source->start();
+        if (!handle_rest(video_source->start(),
+                         QString::fromUtf8("状态: 本地预览启动失败: "))) {
+            engine->destroy_video_source(video_source);
+            video_source = nullptr;
+            ui->video_capture->setDisabled(false);
+            return;
+        }
+        ui->video_capture->setStyleSheet(btnStop);
+        ui->video_capture->setText(QString::fromUtf8("停止本地预览"));
     } else {
-        video_source->stop();
+        (void)video_source->stop();
         engine->destroy_video_source(video_source);
         video_source = nullptr;
         clear_preview();
@@ -431,7 +455,8 @@ void Widget::start_audio_source() {
             ui->btn_audio_preview->setDisabled(false);
             return;
         }
-        if (!audio_source->start()) {
+        if (!handle_rest(audio_source->start(),
+                         QString::fromUtf8("状态: 麦克风预览失败: "))) {
             QMessageBox::warning(this, "Warning",
                                  "Failed to start audio source");
             engine->destroy_audio_source(audio_source);
@@ -561,8 +586,8 @@ void Widget::toggle_meeting_video() {
         return;
     }
     if (!meeting_video_on_) {
-        if (!engine->start_local_video()) {
-            ui->status_label->setText(QString::fromUtf8("状态: 摄像头开启失败"));
+        if (!handle_rest(engine->start_local_video(),
+                         QString::fromUtf8("状态: 摄像头开启失败: "))) {
             return;
         }
         meeting_video_on_ = true;
@@ -570,7 +595,7 @@ void Widget::toggle_meeting_video() {
         ui->btn_meeting_video->setText(QString::fromUtf8("会议：关闭摄像头"));
         ui->status_label->setText(QString::fromUtf8("状态: 摄像头已开"));
     } else {
-        engine->stop_local_video();
+        (void)engine->stop_local_video();
         meeting_video_on_ = false;
         clear_preview();
         ui->btn_meeting_video->setStyleSheet(btnStart);
@@ -584,8 +609,8 @@ void Widget::toggle_meeting_audio() {
         return;
     }
     if (!meeting_audio_on_) {
-        if (!engine->start_local_audio()) {
-            ui->status_label->setText(QString::fromUtf8("状态: 麦克风开启失败"));
+        if (!handle_rest(engine->start_local_audio(),
+                         QString::fromUtf8("状态: 麦克风开启失败: "))) {
             return;
         }
         meeting_audio_on_ = true;
@@ -593,7 +618,7 @@ void Widget::toggle_meeting_audio() {
         ui->btn_meeting_audio->setText(QString::fromUtf8("会议：关闭麦克风"));
         ui->status_label->setText(QString::fromUtf8("状态: 麦克风已开"));
     } else {
-        engine->stop_local_audio();
+        (void)engine->stop_local_audio();
         meeting_audio_on_ = false;
         ui->btn_meeting_audio->setStyleSheet(btnStart);
         ui->btn_meeting_audio->setText(QString::fromUtf8("会议：开启麦克风"));
@@ -662,21 +687,19 @@ void Widget::on_video_frame(xrtc::IXRtcMediaSource*,
         return;
     }
 
-    QImage image(frame.argb->data(), frame.width, frame.height, frame.width * 4,
-                 QImage::Format_ARGB32);
-    QImage copied = image.copy();
-
     bool schedule = false;
     {
         std::lock_guard<std::mutex> lock(preview_mutex_);
-        pending_preview_ = std::move(copied);
-        if (!preview_scheduled_) { //如果没有排队渲染任务,设置渲染任务为true
+        pending_preview_.argb = frame.argb;
+        pending_preview_.width = frame.width;
+        pending_preview_.height = frame.height;
+        if (!preview_scheduled_) {
             preview_scheduled_ = true;
             schedule = true;
         }
     }
 
-    if (schedule) { //没有渲染任务了,就渲染当前帧
+    if (schedule) {
         QMetaObject::invokeMethod(
             this, [this]() { render_preview_frame(); }, Qt::QueuedConnection);
     }
@@ -688,18 +711,27 @@ void Widget::on_video_frame(xrtc::IXRtcMediaSource*,
  * 取出待渲染图像并设置到 pixmap item 上，同时让画面自适应显示区域。
  */
 void Widget::render_preview_frame() {
-    QImage image;
+    LocalPending pending;
     {
         std::lock_guard<std::mutex> lock(preview_mutex_);
-        image = std::move(pending_preview_);
-        preview_scheduled_ = false; //没有待渲染的帧了
+        pending = std::move(pending_preview_);
+        pending_preview_ = {};
+        preview_scheduled_ = false;
     }
-    if (image.isNull() || !preview_item_) {
+    if (!pending.argb || pending.width <= 0 || pending.height <= 0 ||
+        !preview_item_) {
         return;
     }
+    QImage image(pending.argb.get(), pending.width, pending.height,
+                 pending.width * 4, QImage::Format_ARGB32);
     preview_item_->setPixmap(QPixmap::fromImage(image));
-    preview_scene_->setSceneRect(preview_item_->boundingRect());
-    ui->display->fitInView(preview_item_, Qt::KeepAspectRatio);
+    if (pending.width != last_preview_fit_w_ ||
+        pending.height != last_preview_fit_h_) {
+        preview_scene_->setSceneRect(preview_item_->boundingRect());
+        ui->display->fitInView(preview_item_, Qt::KeepAspectRatio);
+        last_preview_fit_w_ = pending.width;
+        last_preview_fit_h_ = pending.height;
+    }
 }
 
 /**
@@ -826,15 +858,13 @@ void Widget::on_remote_video_frame(uint64_t feed_id,
         return;
     }
 
-    QImage image(frame.argb->data(), frame.width, frame.height, frame.width * 4,
-                 QImage::Format_ARGB32);
-    QImage copied = image.copy();
-
     bool schedule = false;
     {
         std::lock_guard<std::mutex> lock(remote_mutex_);
         auto& pending = remote_pending_[feed_id];
-        pending.image = std::move(copied);
+        pending.argb = frame.argb;
+        pending.width = frame.width;
+        pending.height = frame.height;
         if (!pending.scheduled) {
             pending.scheduled = true;
             schedule = true;
@@ -857,26 +887,34 @@ void Widget::on_remote_video_frame(uint64_t feed_id,
  * @brief 在 UI 线程渲染指定 feed 的远端预览帧
  */
 void Widget::render_remote_preview_frame(uint64_t feed_id) {
-    QImage image;
+    RemotePending pending;
     {
         std::lock_guard<std::mutex> lock(remote_mutex_);
         auto it = remote_pending_.find(feed_id);
         if (it == remote_pending_.end()) {
             return;
         }
-        image = std::move(it->second.image);
+        pending = std::move(it->second);
+        it->second = {};
         it->second.scheduled = false;
     }
 
     auto vit = remote_views_.find(feed_id);
-    if (image.isNull() || vit == remote_views_.end() || !vit->second.item ||
-        !vit->second.view || !vit->second.scene) {
+    if (!pending.argb || pending.width <= 0 || pending.height <= 0 ||
+        vit == remote_views_.end() || !vit->second.item || !vit->second.view ||
+        !vit->second.scene) {
         return;
     }
 
+    QImage image(pending.argb.get(), pending.width, pending.height,
+                 pending.width * 4, QImage::Format_ARGB32);
     vit->second.item->setPixmap(QPixmap::fromImage(image));
-    vit->second.scene->setSceneRect(vit->second.item->boundingRect());
-    vit->second.view->fitInView(vit->second.item, Qt::KeepAspectRatio);
+    auto& last = remote_last_fit_size_[feed_id];
+    if (pending.width != last.first || pending.height != last.second) {
+        vit->second.scene->setSceneRect(vit->second.item->boundingRect());
+        vit->second.view->fitInView(vit->second.item, Qt::KeepAspectRatio);
+        last = {pending.width, pending.height};
+    }
 }
 
 void Widget::on_audio_level(xrtc::IXRtcMediaSource* /*audio_source*/,

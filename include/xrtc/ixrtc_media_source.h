@@ -1,6 +1,8 @@
-#pragma once 
+#pragma once
 
 #include <string>
+
+#include <internal/xrtc_result.h>
 
 namespace xrtc {
 
@@ -10,11 +12,11 @@ public:
     virtual ~IXRtcMediaSource() = default;
 
     /// 开始采集
-    virtual bool start() = 0;
+    virtual Rest<> start() = 0;
     /// 停止采集
-    virtual bool stop() = 0;
+    virtual Rest<> stop() = 0;
     /// 切换采集设备（device_id 为空时由实现决定默认设备）
-    virtual bool device_switch(const std::string& device_id) = 0;
+    virtual Rest<> device_switch(const std::string& device_id) = 0;
 };
 
 } //namespace xrtc

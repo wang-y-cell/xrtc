@@ -30,7 +30,7 @@ void JanusClient::bind_transport_signals() {
         utils::connect(transport_->error, this, &JanusClient::on_ws_error));
 }
 
-XRtcStatus JanusClient::Connect(const XRTCJoinConfig& config) {
+Rest<> JanusClient::Connect(const XRTCJoinConfig& config) {
     spdlog::info("[janus] Connect url={} room={} display={}",
                      config.janus_ws_url, config.room_id, config.display_name);
     //设置加入janus的配置
@@ -308,6 +308,7 @@ void JanusClient::attach_subscriber(uint64_t feed_id) {
         tx_ops_[tx] = PendingOp::kAttachSub;
         tx_feeds_[tx] = feed_id;
     }
+    //作为订阅者发送attach,在已有的session上再挂一个VideoRoom插件
     send_json({{"janus", "attach"},
                {"plugin", "janus.plugin.videoroom"},
                {"session_id", session_id_},
@@ -430,6 +431,7 @@ void JanusClient::handle_success(const json& msg) {
         return;
     }
 
+    //你加入房间之后,作为订阅者发送attach,在已有的session上再挂一个VideoRoom插件
     if (op == PendingOp::kAttachSub) {
         const uint64_t handle = data.value("id", static_cast<uint64_t>(0));
         uint64_t feed = 0;
@@ -469,6 +471,7 @@ void JanusClient::handle_success(const json& msg) {
 
 void JanusClient::handle_event(const json& msg) {
     /*
+    /// 作为发布者进入房间之后,janus发送给我们的消息
     {
         "janus": "event",
         "session_id": ...,
@@ -548,18 +551,21 @@ void JanusClient::handle_event(const json& msg) {
         }
     }
 
+    // videoroom == attached
     //解析janus服务端返回的jsep响应
     JanusJsep jsep;
     //解析sdp信息,从msg读取sdp信息给out
     parse_jsep(msg, &jsep);
     if (!jsep.sdp.empty()) { //如果sdp信息不为空
-        //如果当前是我们的消息并且是janus给我们的回复
+        //如果当前是我们作为发布者发送的消息并且是janus回复的 "answer"
         if (handle_id == pub_handle_ && jsep.type == "answer") {
             //收到janus对我们的确认回复,这里是我们发送sdp之后,janus回复我们的消息
             //调用槽函数,我们需要将janus的sdp注册到我们本地中
             publisher_answer.emit(jsep);
-        } else if (jsep.type == "offer") {
+        } else if (jsep.type == "offer") { //作为订阅者收到远端对象的sdp offer
+            //获得我们要订阅的远端对象的feed_id
             uint64_t feed = subscribe_state_.FeedForHandle(handle_id).value_or(0);
+            //发送订阅者offer信号,将我们要订阅的远端对象的feed_id和handle_id发送给call_session
             subscriber_offer.emit(feed, handle_id, jsep);
         }
     }

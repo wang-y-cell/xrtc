@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "concurrency/signal_and_slots/signal_and_slots.h"
+#include "concurrency/signal_and_slots.h"
 #include <xrtc/xrtc_defines.h>
 #include <internal/xrtc_result.h>
 
@@ -26,7 +26,7 @@ public:
 
     //解析这个url之后连接这个服务器,并开启网络线程,线程运行事件循环,
     // 等待网络事件的发生,websocket握手完成,可以接收数据和发送数据(send_text)
-    XRtcStatus open(const std::string& url);
+    Rest<> open(const std::string& url);
     //发送消息到服务端
     void send_text(const std::string& text);
     //关闭连接

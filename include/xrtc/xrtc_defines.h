@@ -110,12 +110,24 @@ struct XRTCRemoteUser {
     std::string display;
 };
 
-// 预览用 ARGB 帧（小端内存布局为 B,G,R,A，对应 QImage::Format_ARGB32）
-// argb 来自 ArgbFramePool（utils::memory_pool 分档）；字节数 = width*height*4
+/// 预览用 I420 帧（供 OpenGL 等直接上传 Y/U/V）。
+/// data_* 在 storage 存活期间有效；strides 可能大于 width/chroma_width。
 struct XRTCVideoFrame {
     int width = 0;
     int height = 0;
-    std::shared_ptr<uint8_t> argb;
+    int stride_y = 0;
+    int stride_u = 0;
+    int stride_v = 0;
+    const uint8_t* data_y = nullptr;
+    const uint8_t* data_u = nullptr;
+    const uint8_t* data_v = nullptr;
+    /// 持有底层 I420 缓冲（如 webrtc::I420BufferInterface）
+    std::shared_ptr<void> storage;
+
+    [[nodiscard]] bool valid() const {
+        return storage && data_y && data_u && data_v && width > 0 && height > 0 &&
+               stride_y > 0 && stride_u > 0 && stride_v > 0;
+    }
 };
 
 }  // namespace xrtc

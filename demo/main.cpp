@@ -4,6 +4,7 @@
 #include <memory>
 
 #include <QApplication>
+#include <QSurfaceFormat>
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -30,10 +31,21 @@ void InitLogging() {
     }
 }
 
+void InitOpenGLFormat() {
+    QSurfaceFormat fmt;
+    fmt.setDepthBufferSize(16);
+    fmt.setStencilBufferSize(8);
+    fmt.setVersion(3, 3);
+    fmt.setProfile(QSurfaceFormat::CoreProfile);
+    fmt.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
+    QSurfaceFormat::setDefaultFormat(fmt);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
     InitLogging();
+    InitOpenGLFormat();
 
     QApplication a(argc, argv);
     Widget w;

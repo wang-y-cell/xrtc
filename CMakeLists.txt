@@ -134,7 +134,6 @@ add_library(xrtc STATIC
     src/media/audio_capture.cpp
     src/media/xrtc_audio_device_module.cpp
     src/media/video_capability_selector.cpp
-    src/media/argb_frame_pool.cpp
     src/session/call_session.cpp
     src/janus/websocket_transport.cpp
     src/janus/janus_client.cpp
@@ -256,7 +255,7 @@ if(NOT QT6_ROOT)
         "或: python build.py --demo --qt_lib=F:/Qt/6.8.3/msvc2022_64")
 endif()
 list(APPEND CMAKE_PREFIX_PATH "${QT6_ROOT}")
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets OpenGL OpenGLWidgets)
 message(STATUS "Qt6 ${Qt6_VERSION} for demo: ${QT6_ROOT}")
 
 qt_standard_project_setup()
@@ -268,6 +267,8 @@ qt_add_executable(webrtc_test
     demo/widget.cpp
     demo/widget.h
     demo/widget.ui
+    demo/yuv_gl_widget.cpp
+    demo/yuv_gl_widget.h
 )
 
 target_link_libraries(webrtc_test
@@ -276,10 +277,13 @@ target_link_libraries(webrtc_test
         ${_XRTC_SPDLOG_LIB}
         Qt::Core
         Qt::Widgets
+        Qt::OpenGL
+        Qt::OpenGLWidgets
 )
 
 target_include_directories(webrtc_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo
 )
 
 if(MSVC)

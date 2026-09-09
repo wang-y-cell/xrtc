@@ -6,12 +6,10 @@
 #include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
 #include <engine/xrtc_global.h>
-#include <media/argb_frame_pool.h>
+#include <media/i420_frame.h>
 #include <media/xrtc_audio_device_module.h>
 #include <spdlog/spdlog.h>
 #include <vector>
-
-#include "libyuv/convert_argb.h"
 
 namespace xrtc {
 
@@ -383,7 +381,7 @@ void CallSession::MuteVideo(bool mute) {
         if (publisher_pc_) {
             publisher_pc_->MuteVideo(mute);
         }
-        // mute 时仍可能在采：关掉预览 ARGB，推流由 track enable 控制
+        // mute 时仍可能在采：关掉预览回调，推流由 track enable 控制
         if (capture_) {
             capture_->set_local_preview_enabled(!mute && local_video_capturing_);
         }
@@ -460,18 +458,8 @@ Rest<> CallSession::StopLocalVideo() {
             video_source_->PushFrame(frame);
 
             if (auto* obs = XRtcGlobal::instance().observer()) {
-                auto argb = AcquireArgbBuffer(w, h);
-                if (argb) {
-                    libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(),
-                                       buffer->DataU(), buffer->StrideU(),
-                                       buffer->DataV(), buffer->StrideV(),
-                                       argb.get(), w * 4, w, h);
-                    XRTCVideoFrame vf;
-                    vf.width = w;
-                    vf.height = h;
-                    vf.argb = std::move(argb);
-                    obs->on_video_frame(capture_.get(), vf);
-                }
+                obs->on_video_frame(capture_.get(),
+                                    MakeXRTCVideoFrame(buffer));
             }
         }
         if (capture_) {
@@ -785,7 +773,7 @@ void CallSession::attachRemoteTrack(
         });
     video->AddOrUpdateSink(att.sink.get(), [] {
         webrtc::VideoSinkWants wants;
-        // 远端渲染限到约 720p，避免多路全分辨率解码+ARGB
+        // 远端渲染限到约 720p，避免多路全分辨率解码+上传
         wants.max_pixel_count = 1280 * 720;
         wants.target_pixel_count = 960 * 540;
         wants.max_framerate_fps = 30;

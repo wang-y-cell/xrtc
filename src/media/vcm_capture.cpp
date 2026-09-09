@@ -5,10 +5,9 @@
 
 #include "api/video/i420_buffer.h"
 #include <engine/xrtc_global.h>
+#include <media/i420_frame.h>
 #include <media/video_capability_selector.h>
 #include <xrtc/ixrtc_engine.h>
-#include "libyuv/convert_argb.h"
-#include <media/argb_frame_pool.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -284,7 +283,7 @@ Rest<> VcmCapture::set_capture_request(const XRTCVideoFormat& requested) {
 }
 
 void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
-    // 推流始终走 WebRTC；预览 ARGB 可关/降分辨率
+    // 推流始终走 WebRTC；预览 I420 可关/降分辨率
     if (track_source_) {
         track_source_->PushFrame(frame);
     }
@@ -332,23 +331,9 @@ void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
         auto scaled = webrtc::I420Buffer::Create(pw, ph);
         scaled->ScaleFrom(*buffer);
         buffer = scaled;
-        width = pw;
-        height = ph;
     }
 
-    auto argb = AcquireArgbBuffer(width, height);
-    if (!argb) {
-        return;
-    }
-    libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(), buffer->DataU(),
-                       buffer->StrideU(), buffer->DataV(), buffer->StrideV(),
-                       argb.get(), width * 4, width, height);
-
-    XRTCVideoFrame video_frame;
-    video_frame.width = width;
-    video_frame.height = height;
-    video_frame.argb = std::move(argb);
-    observer->on_video_frame(this, video_frame);
+    observer->on_video_frame(this, MakeXRTCVideoFrame(std::move(buffer)));
 }
 
 void VcmCapture::release_vcm() {

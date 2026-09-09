@@ -276,7 +276,7 @@
       </widget>
      </item>
      <item>
-      <widget class="QGraphicsView" name="display">
+      <widget class="YuvGlWidget" name="display" native="true">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
          <horstretch>0</horstretch>
@@ -361,6 +361,13 @@
    </item>
   </layout>
  </widget>
+ <customwidgets>
+  <customwidget>
+   <class>YuvGlWidget</class>
+   <extends>QOpenGLWidget</extends>
+   <header>yuv_gl_widget.h</header>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>

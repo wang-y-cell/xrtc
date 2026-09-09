@@ -1,9 +1,8 @@
 ﻿#include "widget.h"
 #include "ui_widget.h"
+#include "yuv_gl_widget.h"
 
 #include <QMessageBox>
-#include <QPainter>
-#include <QPixmap>
 #include <QResizeEvent>
 #include <QString>
 #include <QSizePolicy>
@@ -174,19 +173,16 @@ void Widget::init_connection() {
 }
 
 /**
- * @brief 初始化本地预览窗口
- * 远端窗口在用户加入时按 feed_id 动态创建。
+ * @brief 初始化本地预览（OpenGL 控件已由 .ui 创建）
  */
 void Widget::init_preview() {
-    preview_scene_ = new QGraphicsScene(this);
-    ui->display->setScene(preview_scene_);
-    ui->display->setRenderHint(QPainter::SmoothPixmapTransform);
-    preview_item_ = preview_scene_->addPixmap(QPixmap());
+    if (ui->display) {
+        ui->display->clearFrame();
+    }
 }
 
 /**
  * @brief 清空本地预览
- * 加锁清掉待渲染帧，并清空画面上的图像。
  */
 void Widget::clear_preview() {
     {
@@ -194,10 +190,8 @@ void Widget::clear_preview() {
         pending_preview_ = {};
         preview_scheduled_ = false;
     }
-    last_preview_fit_w_ = 0;
-    last_preview_fit_h_ = 0;
-    if (preview_item_) {
-        preview_item_->setPixmap(QPixmap());
+    if (ui->display) {
+        ui->display->clearFrame();
     }
 }
 
@@ -230,28 +224,19 @@ void Widget::ensure_remote_view(uint64_t feed_id, const QString& display) {
     name->setAlignment(Qt::AlignCenter);
     name->setWordWrap(true);
 
-    auto* view = new QGraphicsView();
-    view->setMinimumSize(220, 140);
-    view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    view->setRenderHint(QPainter::SmoothPixmapTransform);
-    auto* scene = new QGraphicsScene(container);
-    view->setScene(scene);
-    auto* item = scene->addPixmap(QPixmap());
+    auto* gl = new YuvGlWidget();
+    gl->setMinimumSize(220, 140);
 
     layout->addWidget(name);
-    layout->addWidget(view, 1);
+    layout->addWidget(gl, 1);
 
-    // 插在末尾 spacer 之前，保证窗口横向排列、右侧仍可留白
-    const int insert_at =
-        std::max(0, ui->remote_layout->count() - 1);
+    const int insert_at = std::max(0, ui->remote_layout->count() - 1);
     ui->remote_layout->insertWidget(insert_at, container, 1);
 
     RemoteViewUi remote;
     remote.container = container;
     remote.name_label = name;
-    remote.view = view;
-    remote.scene = scene;
-    remote.item = item;
+    remote.gl = gl;
     remote.display = title;
     remote_views_[feed_id] = remote;
 }
@@ -264,7 +249,6 @@ void Widget::remove_remote_view(uint64_t feed_id) {
         std::lock_guard<std::mutex> lock(remote_mutex_);
         remote_pending_.erase(feed_id);
     }
-    remote_last_fit_size_.erase(feed_id);
 
     auto it = remote_views_.find(feed_id);
     if (it == remote_views_.end()) {
@@ -285,7 +269,6 @@ void Widget::clear_all_remote_views() {
         std::lock_guard<std::mutex> lock(remote_mutex_);
         remote_pending_.clear();
     }
-    remote_last_fit_size_.clear();
 
     for (auto& [feed_id, remote] : remote_views_) {
         (void)feed_id;
@@ -356,20 +339,10 @@ Widget::~Widget() {
 }
 
 /**
- * @brief 窗口尺寸变化事件
- * 若当前有画面，则让画面按等比缩放适配新的显示区域。
+ * @brief 窗口尺寸变化事件（OpenGL 控件自行 letterbox，无需 fitInView）
  */
 void Widget::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
-    if (preview_item_ && !preview_item_->pixmap().isNull()) {
-        ui->display->fitInView(preview_item_, Qt::KeepAspectRatio);
-    }
-    for (auto& [feed_id, remote] : remote_views_) {
-        (void)feed_id;
-        if (remote.item && remote.view && !remote.item->pixmap().isNull()) {
-            remote.view->fitInView(remote.item, Qt::KeepAspectRatio);
-        }
-    }
 }
 
 /**
@@ -677,22 +650,18 @@ void Widget::video_source_stop_event(xrtc::IXRtcMediaSource*,
 
 /**
  * @brief 回调：本地视频帧到达（可能来自非 UI 线程）
- * 校验帧数据后拷贝一份 ARGB 图像，加锁放入待渲染队列；
- * 若当前没有排队的渲染任务，则通过队列方式触发一次
- * render_preview_frame，保证渲染始终在 UI 线程执行。
+ * 缓存 I420 并调度 UI 线程交给 OpenGL 控件上传。
  */
 void Widget::on_video_frame(xrtc::IXRtcMediaSource*,
                             const xrtc::XRTCVideoFrame& frame) {
-    if (!frame.argb || frame.width <= 0 || frame.height <= 0) {
+    if (!frame.valid()) {
         return;
     }
 
     bool schedule = false;
     {
         std::lock_guard<std::mutex> lock(preview_mutex_);
-        pending_preview_.argb = frame.argb;
-        pending_preview_.width = frame.width;
-        pending_preview_.height = frame.height;
+        pending_preview_.frame = frame;
         if (!preview_scheduled_) {
             preview_scheduled_ = true;
             schedule = true;
@@ -706,9 +675,7 @@ void Widget::on_video_frame(xrtc::IXRtcMediaSource*,
 }
 
 /**
- * @brief 在 UI 线程渲染本地预览帧pending_preview_
- * pending_preview_是通过onframe函数的帧
- * 取出待渲染图像并设置到 pixmap item 上，同时让画面自适应显示区域。
+ * @brief 在 UI 线程把本地帧交给 YuvGlWidget
  */
 void Widget::render_preview_frame() {
     LocalPending pending;
@@ -718,20 +685,10 @@ void Widget::render_preview_frame() {
         pending_preview_ = {};
         preview_scheduled_ = false;
     }
-    if (!pending.argb || pending.width <= 0 || pending.height <= 0 ||
-        !preview_item_) {
+    if (!pending.frame.valid() || !ui->display) {
         return;
     }
-    QImage image(pending.argb.get(), pending.width, pending.height,
-                 pending.width * 4, QImage::Format_ARGB32);
-    preview_item_->setPixmap(QPixmap::fromImage(image));
-    if (pending.width != last_preview_fit_w_ ||
-        pending.height != last_preview_fit_h_) {
-        preview_scene_->setSceneRect(preview_item_->boundingRect());
-        ui->display->fitInView(preview_item_, Qt::KeepAspectRatio);
-        last_preview_fit_w_ = pending.width;
-        last_preview_fit_h_ = pending.height;
-    }
+    ui->display->setFrame(pending.frame);
 }
 
 /**
@@ -854,7 +811,7 @@ void Widget::on_remote_user_left(const xrtc::XRTCRemoteUser& user) {
  */
 void Widget::on_remote_video_frame(uint64_t feed_id,
                                    const xrtc::XRTCVideoFrame& frame) {
-    if (!frame.argb || frame.width <= 0 || frame.height <= 0) {
+    if (!frame.valid()) {
         return;
     }
 
@@ -862,9 +819,7 @@ void Widget::on_remote_video_frame(uint64_t feed_id,
     {
         std::lock_guard<std::mutex> lock(remote_mutex_);
         auto& pending = remote_pending_[feed_id];
-        pending.argb = frame.argb;
-        pending.width = frame.width;
-        pending.height = frame.height;
+        pending.frame = frame;
         if (!pending.scheduled) {
             pending.scheduled = true;
             schedule = true;
@@ -900,21 +855,10 @@ void Widget::render_remote_preview_frame(uint64_t feed_id) {
     }
 
     auto vit = remote_views_.find(feed_id);
-    if (!pending.argb || pending.width <= 0 || pending.height <= 0 ||
-        vit == remote_views_.end() || !vit->second.item || !vit->second.view ||
-        !vit->second.scene) {
+    if (!pending.frame.valid() || vit == remote_views_.end() || !vit->second.gl) {
         return;
     }
-
-    QImage image(pending.argb.get(), pending.width, pending.height,
-                 pending.width * 4, QImage::Format_ARGB32);
-    vit->second.item->setPixmap(QPixmap::fromImage(image));
-    auto& last = remote_last_fit_size_[feed_id];
-    if (pending.width != last.first || pending.height != last.second) {
-        vit->second.scene->setSceneRect(vit->second.item->boundingRect());
-        vit->second.view->fitInView(vit->second.item, Qt::KeepAspectRatio);
-        last = {pending.width, pending.height};
-    }
+    vit->second.gl->setFrame(pending.frame);
 }
 
 void Widget::on_audio_level(xrtc::IXRtcMediaSource* /*audio_source*/,

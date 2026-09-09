@@ -12,7 +12,7 @@
 
 namespace xrtc {
 
-/// 远端 VideoTrack 的 sink：I420 → ARGB，回调业务层
+/// 远端 VideoTrack 的 sink：取 I420（可降分辨率），回调业务层
 class RemoteVideoSink : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
 public:
     using FrameCallback =
@@ -24,7 +24,7 @@ public:
 private:
     ///@brief 远端视频流的ID
     uint64_t feed_id_ = 0;
-    ///@brief 回调函数,表示将OnFrame获得的数据转换为ARGB格式后,再交给上层回调
+    ///@brief 将 I420 帧交给上层（OpenGL 等）
     FrameCallback callback_;
 };
 

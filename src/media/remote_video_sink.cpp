@@ -1,11 +1,9 @@
 #include <media/remote_video_sink.h>
-#include <media/argb_frame_pool.h>
+#include <media/i420_frame.h>
 
 #include <algorithm>
 
 #include "api/video/i420_buffer.h"
-#include "libyuv/convert_argb.h"
-#include "rtc_base/logging.h"
 
 namespace xrtc {
 
@@ -33,7 +31,7 @@ void RemoteVideoSink::OnFrame(const webrtc::VideoFrame& frame) {
         return;
     }
 
-    // 远端小窗预览：最长边压到 960，降低多路 ARGB 成本
+    // 远端小窗预览：最长边压到 960，降低多路上传成本
     constexpr int kMaxPreviewLongEdge = 960;
     const int long_edge = std::max(width, height);
     if (long_edge > kMaxPreviewLongEdge) {
@@ -51,23 +49,9 @@ void RemoteVideoSink::OnFrame(const webrtc::VideoFrame& frame) {
         auto scaled = webrtc::I420Buffer::Create(pw, ph);
         scaled->ScaleFrom(*buffer);
         buffer = scaled;
-        width = pw;
-        height = ph;
     }
 
-    auto argb = AcquireArgbBuffer(width, height);
-    if (!argb) {
-        return;
-    }
-    libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(), buffer->DataU(),
-                       buffer->StrideU(), buffer->DataV(), buffer->StrideV(),
-                       argb.get(), width * 4, width, height);
-
-    XRTCVideoFrame video_frame;
-    video_frame.width = width;
-    video_frame.height = height;
-    video_frame.argb = std::move(argb);
-    callback_(feed_id_, video_frame);
+    callback_(feed_id_, MakeXRTCVideoFrame(std::move(buffer)));
 }
 
 }  // namespace xrtc

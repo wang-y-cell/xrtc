@@ -21,7 +21,7 @@ public:
     virtual void video_source_stop_event(IXRtcMediaSource* video_source,
                                          XRtcError error) {}
 
-    // qt界面渲染,在onframe函数中调用,将获得视频帧转换成rgba回调这个函数
+    // 本地/远端视频帧（I420，供 OpenGL 等上传 Y/U/V）
     virtual void on_video_frame(IXRtcMediaSource* video_source,
                                 const XRTCVideoFrame& frame) {}
 

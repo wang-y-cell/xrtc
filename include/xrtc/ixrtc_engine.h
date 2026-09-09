@@ -55,6 +55,10 @@ public:
     virtual std::vector<XRTCDeviceInfo> get_playout_device_info() = 0;
     /// 选择远端音频播放设备；空 id 表示默认。可在进房前或会议中调用
     virtual Rest<> set_playout_device(const std::string& device_id) = 0;
+    /// 选择麦克风；会中有采集器则立即切换，否则记住供下次 StartLocalAudio / join
+    virtual Rest<> set_audio_device(const std::string& device_id) = 0;
+    /// 选择摄像头；会中有采集器则立即切换，否则记住供下次 StartLocalVideo / join
+    virtual Rest<> set_video_device(const std::string& device_id) = 0;
 
     /// 枚举摄像头支持的采集格式（可能含重复分辨率、不同 pixel format）
     virtual std::vector<XRTCVideoFormat> get_video_capabilities(

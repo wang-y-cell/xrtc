@@ -50,6 +50,11 @@ public:
     Rest<> StartLocalAudio();
     Rest<> StopLocalAudio();
 
+    /// 切换麦克风；更新 config，若采集器已创建则 device_switch
+    Rest<> SwitchAudioDevice(const std::string& device_id);
+    /// 切换摄像头；更新 config，若采集器已创建则 device_switch
+    Rest<> SwitchVideoDevice(const std::string& device_id);
+
     bool local_video_capturing() const { return local_video_capturing_; }
     bool local_audio_capturing() const { return local_audio_capturing_; }
 

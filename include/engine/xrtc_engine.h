@@ -21,6 +21,8 @@ public:
     std::vector<XRTCDeviceInfo> get_audio_device_info() override;
     std::vector<XRTCDeviceInfo> get_playout_device_info() override;
     Rest<> set_playout_device(const std::string& device_id) override;
+    Rest<> set_audio_device(const std::string& device_id) override;
+    Rest<> set_video_device(const std::string& device_id) override;
 
     std::vector<XRTCVideoFormat> get_video_capabilities(
         const std::string& device_id) override;

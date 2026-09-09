@@ -516,6 +516,66 @@ Rest<> CallSession::StopLocalAudio() {
     return run();
 }
 
+Rest<> CallSession::SwitchAudioDevice(const std::string& device_id) {
+    auto run = [this, device_id]() -> Rest<> {
+        if (device_id.empty()) {
+            spdlog::warn("[session] SwitchAudioDevice: empty device_id");
+            return xrtc_err(XRtcError::kInvalidParam);
+        }
+        config_.audio_device_id = device_id;
+        if (!audio_capture_) {
+            spdlog::info(
+                "[session] SwitchAudioDevice: remembered id={} (capture not "
+                "ready)",
+                device_id);
+            return xrtc_ok();
+        }
+        auto st = audio_capture_->device_switch(device_id);
+        if (!st) {
+            spdlog::error("[session] SwitchAudioDevice failed id={} err={}",
+                          device_id, XRtcErrorToString(st.error()));
+        } else {
+            spdlog::info("[session] SwitchAudioDevice ok id={}", device_id);
+        }
+        return st;
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        return api->BlockingCall(run);
+    }
+    return run();
+}
+
+Rest<> CallSession::SwitchVideoDevice(const std::string& device_id) {
+    auto run = [this, device_id]() -> Rest<> {
+        if (device_id.empty()) {
+            spdlog::warn("[session] SwitchVideoDevice: empty device_id");
+            return xrtc_err(XRtcError::kInvalidParam);
+        }
+        config_.video_device_id = device_id;
+        if (!capture_) {
+            spdlog::info(
+                "[session] SwitchVideoDevice: remembered id={} (capture not "
+                "ready)",
+                device_id);
+            return xrtc_ok();
+        }
+        auto st = capture_->device_switch(device_id);
+        if (!st) {
+            spdlog::error("[session] SwitchVideoDevice failed id={} err={}",
+                          device_id, XRtcErrorToString(st.error()));
+        } else {
+            spdlog::info("[session] SwitchVideoDevice ok id={}", device_id);
+        }
+        return st;
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        return api->BlockingCall(run);
+    }
+    return run();
+}
+
 Rest<> CallSession::ensureLocalMedia() {
     //WebRTC 全局工厂，用来创建 AudioTrack、VideoTrack 等。拿不到就返回 kMediaStartFailed
     auto factory = XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();

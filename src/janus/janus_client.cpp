@@ -362,9 +362,11 @@ utils::slots_t<> JanusClient::on_ws_message(const std::string& text) {
         //ICE 候选交换
         handle_trickle(msg);
     } else if (janus == "hangup") {
+        const uint64_t handle_id =
+            msg.value("sender", static_cast<uint64_t>(0));
         const std::string reason = msg.value("reason", "hangup");
-        spdlog::warn("[janus] hangup: {}", reason);
-        error.emit(std::string("hangup: ") + reason);
+        spdlog::warn("[janus] hangup handle={} reason={}", handle_id, reason);
+        hangup.emit(handle_id, reason);
     } else if (janus == "error" || janus == "timeout") {
         const std::string tx = msg.value("transaction", "");
         {

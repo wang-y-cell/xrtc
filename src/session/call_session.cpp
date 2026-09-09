@@ -1,6 +1,7 @@
 ﻿#include <session/call_session.h>
 
 #include "api/audio_options.h"
+#include "api/units/time_delta.h"
 #include "api/video/i420_buffer.h"
 #include "api/video/video_source_interface.h"
 #include "rtc_base/thread.h"
@@ -52,6 +53,8 @@ void CallSession::bindJanusSignals() {
     janus_conns_.emplace_back(utils::connect(
         janus_->remote_candidate, this, &CallSession::onRemoteCandidate));
     janus_conns_.emplace_back(
+        utils::connect(janus_->hangup, this, &CallSession::onJanusHangup));
+    janus_conns_.emplace_back(
         utils::connect(janus_->error, this, &CallSession::onJanusError));
     janus_conns_.emplace_back(
         utils::connect(janus_->destroyed, this, &CallSession::onJanusDestroyed));
@@ -65,6 +68,9 @@ slots_t<> CallSession::onPublishers(
             return;
         }
         for (const auto& p : pubs) {
+            if (p.feed_id != 0 && !p.display.empty()) {
+                feed_to_display_[p.feed_id] = p.display;
+            }
             subscribeFeed(p);
         }
     });
@@ -91,9 +97,16 @@ slots_t<> CallSession::onPublisherLeft(uint64_t feed_id,
                 ++it;
             }
         }
+        std::string display;
+        if (auto dit = feed_to_display_.find(feed_id); dit != feed_to_display_.end()) {
+            display = dit->second;
+            feed_to_display_.erase(dit);
+        }
+        subscriber_retry_count_.erase(feed_id);
         if (auto* obs = XRtcGlobal::instance().observer()) {
             XRTCRemoteUser user;
             user.feed_id = feed_id;
+            user.display = std::move(display);
             obs->on_remote_user_left(user);
         }
     });
@@ -156,14 +169,27 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                     }
                     attachRemoteTrack(feed_id, track);
                 };
-            pcb.on_error = [this, gen](const std::string& err) {
+            pcb.on_connection_state =
+                [this, handle_id, feed_id, gen](XRTCConnectionState state) {
+                    if (!isCurrentGeneration(gen)) {
+                        return;
+                    }
+                    if (state != XRTCConnectionState::kFailed) {
+                        return;
+                    }
+                    spdlog::warn(
+                        "[session] subscriber PC failed feed={} handle={}",
+                        feed_id, handle_id);
+                    dropSubscriber(handle_id, "subscriber pc failed",
+                                   /*retry=*/true);
+                };
+            pcb.on_error = [this, handle_id, feed_id, gen](const std::string& err) {
                 if (!isCurrentGeneration(gen)) {
                     return;
                 }
-                spdlog::error("Subscriber PC error: {}", err);
-                if (auto* obs = XRtcGlobal::instance().observer()) {
-                    obs->on_connection_state(XRTCConnectionState::kFailed);
-                }
+                spdlog::error("[session] subscriber PC error feed={} err={}",
+                              feed_id, err);
+                dropSubscriber(handle_id, err, /*retry=*/true);
             };
 
             auto factory =
@@ -175,6 +201,9 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                               feed_id, XRtcErrorToString(st.error()));
                 if (!life_.join_notified) {
                     failJoin(st.error(), "subscriber pc init failed");
+                } else {
+                    // 已进房：单路订阅失败不拆会，允许后续 publishers 事件再订
+                    janus_->DetachSubscriber(feed_id);
                 }
                 return;
             }
@@ -185,6 +214,12 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
             if (auto* obs = XRtcGlobal::instance().observer()) {
                 XRTCRemoteUser user;
                 user.feed_id = feed_id;
+                if (auto it = feed_to_display_.find(feed_id);
+                    it != feed_to_display_.end()) {
+                    user.display = it->second;
+                }
+                spdlog::info("[session] remote user joined feed={} display={}",
+                             feed_id, user.display);
                 obs->on_remote_user_joined(user);
             }
         });
@@ -214,6 +249,47 @@ slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
     return {};
 }
 
+slots_t<> CallSession::onJanusHangup(uint64_t handle_id,
+                                     const std::string& reason) {
+    const uint64_t gen = life_.generation;
+    XRtcGlobal::instance().api_thread()->PostTask(
+        [this, handle_id, reason, gen]() {
+            if (gen != life_.generation) {
+                return;
+            }
+            const std::string msg =
+                reason.empty() ? "hangup" : ("hangup: " + reason);
+
+            // 发布者挂断 → 整场失败
+            if (handle_id != 0 && handle_id == janus_->publisher_handle()) {
+                spdlog::error("[session] publisher hangup: {}", msg);
+                if (life_.join_notified) {
+                    failAfterJoined(XRtcError::kSignalingFailed, msg);
+                } else {
+                    failJoin(XRtcError::kSignalingFailed, msg);
+                }
+                return;
+            }
+
+            // 订阅者挂断（常见 ICE failed）→ 只拆该路并重试
+            if (subscriber_pcs_.count(handle_id) > 0 ||
+                handle_to_feed_.count(handle_id) > 0) {
+                spdlog::warn("[session] subscriber hangup handle={} reason={}",
+                             handle_id, reason);
+                dropSubscriber(handle_id, msg, /*retry=*/true);
+                return;
+            }
+
+            // 未知 handle：可能是已清理的订阅，或异常；已进房则不拆整场
+            spdlog::warn("[session] ignore hangup for unknown handle={} reason={}",
+                         handle_id, reason);
+            if (!life_.join_notified) {
+                failJoin(XRtcError::kSignalingFailed, msg);
+            }
+        });
+    return {};
+}
+
 slots_t<> CallSession::onJanusError(const std::string& err) {
     const uint64_t gen = life_.generation;
     XRtcGlobal::instance().api_thread()->PostTask([this, err, gen]() {
@@ -230,6 +306,84 @@ slots_t<> CallSession::onJanusError(const std::string& err) {
         }
     });
     return {};
+}
+
+void CallSession::dropSubscriber(uint64_t handle_id, const std::string& reason,
+                                 bool retry) {
+    // 幂等：hangup 与 PC failed 可能连续到达
+    if (subscriber_pcs_.count(handle_id) == 0 &&
+        handle_to_feed_.count(handle_id) == 0) {
+        return;
+    }
+
+    uint64_t feed_id = 0;
+    if (auto it = handle_to_feed_.find(handle_id); it != handle_to_feed_.end()) {
+        feed_id = it->second;
+        handle_to_feed_.erase(it);
+    }
+    subscriber_pcs_.erase(handle_id);
+
+    if (feed_id == 0) {
+        spdlog::warn("[session] dropSubscriber: no feed for handle={} ({})",
+                     handle_id, reason);
+        return;
+    }
+
+    detachRemoteMedia(feed_id);
+    // 释放 Janus 侧 handle，并清 subscribe_state，允许重新 Subscribe
+    janus_->DetachSubscriber(feed_id);
+
+    int retries = 0;
+    if (auto rit = subscriber_retry_count_.find(feed_id);
+        rit != subscriber_retry_count_.end()) {
+        retries = rit->second;
+    }
+
+    if (retry && life_.active && retries < kMaxSubscriberRetries) {
+        subscriber_retry_count_[feed_id] = retries + 1;
+        spdlog::info(
+            "[session] retry subscribe feed={} attempt={}/{} after: {}",
+            feed_id, retries + 1, kMaxSubscriberRetries, reason);
+        JanusPublisherInfo info;
+        info.feed_id = feed_id;
+        if (auto dit = feed_to_display_.find(feed_id);
+            dit != feed_to_display_.end()) {
+            info.display = dit->second;
+        }
+        const uint64_t gen = life_.generation;
+        // 稍后再订，避开 Janus 刚 hangup 的瞬态
+        XRtcGlobal::instance().api_thread()->PostDelayedTask(
+            [this, info, gen]() {
+                if (!isCurrentGeneration(gen) || !life_.active) {
+                    return;
+                }
+                // 对端已离开则不再重订
+                if (feed_to_display_.find(info.feed_id) ==
+                    feed_to_display_.end()) {
+                    subscriber_retry_count_.erase(info.feed_id);
+                    return;
+                }
+                subscribeFeed(info);
+            },
+            webrtc::TimeDelta::Millis(800 * (retries + 1)));
+        return;
+    }
+
+    spdlog::warn("[session] give up subscribe feed={} after: {}", feed_id,
+                 reason);
+    subscriber_retry_count_.erase(feed_id);
+    if (auto* obs = XRtcGlobal::instance().observer()) {
+        XRTCRemoteUser user;
+        user.feed_id = feed_id;
+        if (auto dit = feed_to_display_.find(feed_id);
+            dit != feed_to_display_.end()) {
+            user.display = dit->second;
+            feed_to_display_.erase(dit);
+        }
+        obs->on_remote_user_left(user);
+    } else {
+        feed_to_display_.erase(feed_id);
+    }
 }
 
 slots_t<> CallSession::onJanusDestroyed() {
@@ -282,6 +436,8 @@ void CallSession::cleanupMediaResources() {
         publisher_pc_.reset();
         subscriber_pcs_.clear();
         handle_to_feed_.clear();
+        feed_to_display_.clear();
+        subscriber_retry_count_.clear();
         audio_track_ = nullptr;
         video_track_ = nullptr;
         video_source_ = nullptr;
@@ -770,6 +926,9 @@ void CallSession::onSubscriberLocalSdp(uint64_t handle_id,
 }
 
 void CallSession::subscribeFeed(const JanusPublisherInfo& info) {
+    if (info.feed_id != 0 && !info.display.empty()) {
+        feed_to_display_[info.feed_id] = info.display;
+    }
     janus_->Subscribe(info.feed_id);
 }
 
@@ -841,6 +1000,8 @@ void CallSession::attachRemoteTrack(
         return wants;
     }());
     remote_videos_[feed_id] = std::move(att);
+    subscriber_retry_count_.erase(feed_id);
+    spdlog::info("[session] remote video attached, feed={}", feed_id);
 }
 
 }  // namespace xrtc

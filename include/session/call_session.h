@@ -87,8 +87,12 @@ private:
                                 const JanusJsep& offer);
     slots_t<> onRemoteCandidate(uint64_t handle_id, const std::string& mid,
                                 int idx, const std::string& cand);
+    slots_t<> onJanusHangup(uint64_t handle_id, const std::string& reason);
     slots_t<> onJanusError(const std::string& err);
     slots_t<> onJanusDestroyed();
+    /// 订阅路失败：只拆该 PC，可选稍后重试 Subscribe（不拆整场）
+    void dropSubscriber(uint64_t handle_id, const std::string& reason,
+                        bool retry);
     ///在 Janus 进房成功后，准备本地轨与采集器（默认不开采，由 StartLocal* 手动开）
     Rest<> ensureLocalMedia();
     /// 进房后默认禁推流，等待上层 start_local_*
@@ -131,11 +135,17 @@ private:
     std::unordered_map<uint64_t, std::unique_ptr<PeerConnectionHandler>>
         subscriber_pcs_;
     std::unordered_map<uint64_t, uint64_t> handle_to_feed_;
+    /// feed_id → Janus display（会议客户端用 userId 字符串作 display）
+    std::unordered_map<uint64_t, std::string> feed_to_display_;
+    /// 订阅 ICE 失败后的重试次数（按 feed）
+    std::unordered_map<uint64_t, int> subscriber_retry_count_;
     std::unordered_map<uint64_t, RemoteVideoAttachment> remote_videos_;
     /// 持有远端音频轨，保证其存活并由 ADM 混音播放
     std::unordered_map<uint64_t,
                        webrtc::scoped_refptr<webrtc::AudioTrackInterface>>
         remote_audio_tracks_;
+
+    static constexpr int kMaxSubscriberRetries = 3;
 };
 
 }  // namespace xrtc

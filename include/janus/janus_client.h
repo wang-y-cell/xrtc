@@ -411,6 +411,8 @@ public:
     utils::signal<uint64_t, uint64_t, JanusJsep> subscriber_offer{this};
     utils::signal<uint64_t, std::string, int, std::string> remote_candidate{this};
     utils::signal<std::string> error{this};
+    /// handle_id + reason；订阅 ICE 失败时只应拆该 handle，不要当整场 error
+    utils::signal<uint64_t, std::string> hangup{this};
     utils::signal<> destroyed{this};
 
     //连接janus服务器,websocket完成,可以发送和接收数据

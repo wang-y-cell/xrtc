@@ -111,9 +111,17 @@ private:
     void detachRemoteVideo(uint64_t feed_id);
     void detachRemoteMedia(uint64_t feed_id);
     void detachAllRemoteMedia();
+    void flushPendingRemoteIce(uint64_t handle_id);
+    void clearPendingRemoteIce(uint64_t handle_id);
 
     XRTCJoinConfig config_;
     SessionLifecycle life_;
+
+    struct PendingRemoteIce {
+        std::string mid;
+        int idx = 0;
+        std::string cand;
+    };
 
     /// Beast 线程 emit → Queued 到此 worker；槽内再 PostTask 到 WebRTC api_thread
     std::unique_ptr<utils::worker_thread> signal_thread_;
@@ -139,6 +147,11 @@ private:
     std::unordered_map<uint64_t, std::string> feed_to_display_;
     /// 订阅 ICE 失败后的重试次数（按 feed）
     std::unordered_map<uint64_t, int> subscriber_retry_count_;
+    /// 已通知 UI「远端加入」的 feed（重试订阅时避免重复 joined）
+    std::unordered_map<uint64_t, bool> remote_joined_notified_;
+    /// PC 尚未创建时按 handle 暂存 Janus trickle
+    std::unordered_map<uint64_t, std::vector<PendingRemoteIce>>
+        pending_remote_ice_by_handle_;
     std::unordered_map<uint64_t, RemoteVideoAttachment> remote_videos_;
     /// 持有远端音频轨，保证其存活并由 ADM 混音播放
     std::unordered_map<uint64_t,

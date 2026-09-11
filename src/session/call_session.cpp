@@ -91,6 +91,7 @@ slots_t<> CallSession::onPublisherLeft(uint64_t feed_id,
         }
         for (auto it = handle_to_feed_.begin(); it != handle_to_feed_.end();) {
             if (it->second == feed_id) {
+                clearPendingRemoteIce(it->first);
                 subscriber_pcs_.erase(it->first);
                 it = handle_to_feed_.erase(it);
             } else {
@@ -103,6 +104,7 @@ slots_t<> CallSession::onPublisherLeft(uint64_t feed_id,
             feed_to_display_.erase(dit);
         }
         subscriber_retry_count_.erase(feed_id);
+        remote_joined_notified_.erase(feed_id);
         if (auto* obs = XRtcGlobal::instance().observer()) {
             XRTCRemoteUser user;
             user.feed_id = feed_id;
@@ -136,6 +138,10 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                 return;
             }
             handle_to_feed_[handle_id] = feed_id;
+            spdlog::info(
+                "[session] subscriber offer feed={} handle={} type={} "
+                "sdp_bytes={}",
+                feed_id, handle_id, offer.type, offer.sdp.size());
 
             PeerConnectionHandler::Callbacks pcb;
             pcb.on_local_description =
@@ -152,12 +158,19 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                 if (!isCurrentGeneration(gen)) {
                     return;
                 }
+                spdlog::info(
+                    "[session] send subscriber trickle handle={} mid={} idx={} "
+                    "cand={}",
+                    handle_id, mid, idx, cand.substr(0, 80));
                 janus_->SendTrickle(handle_id, mid, idx, cand);
             };
             pcb.on_ice_gathering_complete = [this, handle_id, gen]() {
                 if (!isCurrentGeneration(gen)) {
                     return;
                 }
+                spdlog::info(
+                    "[session] send subscriber trickle-complete handle={}",
+                    handle_id);
                 janus_->SendTrickleComplete(handle_id);
             };
             pcb.on_track =
@@ -196,9 +209,12 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                 XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
             auto pc =
                 std::make_unique<PeerConnectionHandler>(factory, std::move(pcb));
+            pc->SetLabel("sub-feed" + std::to_string(feed_id) + "-h" +
+                         std::to_string(handle_id));
             if (auto st = pc->Init(config_.ice_servers); !st) {
                 spdlog::error("[session] subscriber pc init failed feed={} err={}",
                               feed_id, XRtcErrorToString(st.error()));
+                clearPendingRemoteIce(handle_id);
                 if (!life_.join_notified) {
                     failJoin(st.error(), "subscriber pc init failed");
                 } else {
@@ -207,23 +223,56 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
                 }
                 return;
             }
-            pc->SetRemoteDescription(offer.type, offer.sdp);
-            pc->CreateAnswer();
+            // 先入 map，再 SetRemote/Answer，避免 Janus trickle 早到被丢
+            auto* pc_ptr = pc.get();
             subscriber_pcs_[handle_id] = std::move(pc);
+            flushPendingRemoteIce(handle_id);
+            pc_ptr->SetRemoteDescription(offer.type, offer.sdp);
+            pc_ptr->CreateAnswer();
 
-            if (auto* obs = XRtcGlobal::instance().observer()) {
+            if (remote_joined_notified_[feed_id]) {
+                spdlog::info(
+                    "[session] skip duplicate remote joined notify feed={} "
+                    "(retry)",
+                    feed_id);
+            } else if (auto* obs = XRtcGlobal::instance().observer()) {
                 XRTCRemoteUser user;
                 user.feed_id = feed_id;
                 if (auto it = feed_to_display_.find(feed_id);
                     it != feed_to_display_.end()) {
                     user.display = it->second;
                 }
+                remote_joined_notified_[feed_id] = true;
                 spdlog::info("[session] remote user joined feed={} display={}",
                              feed_id, user.display);
                 obs->on_remote_user_joined(user);
             }
         });
     return {};
+}
+
+void CallSession::flushPendingRemoteIce(uint64_t handle_id) {
+    auto pit = pending_remote_ice_by_handle_.find(handle_id);
+    if (pit == pending_remote_ice_by_handle_.end()) {
+        return;
+    }
+    auto sit = subscriber_pcs_.find(handle_id);
+    if (sit == subscriber_pcs_.end() || !sit->second) {
+        return;
+    }
+    spdlog::info(
+        "[session] flush {} early remote ICE for handle={}", pit->second.size(),
+        handle_id);
+    for (const auto& c : pit->second) {
+        sit->second->AddIceCandidate(c.mid, c.idx, c.cand);
+    }
+    pending_remote_ice_by_handle_.erase(pit);
+}
+
+void CallSession::clearPendingRemoteIce(uint64_t handle_id) {
+    if (pending_remote_ice_by_handle_.erase(handle_id) > 0) {
+        spdlog::info("[session] clear pending remote ICE handle={}", handle_id);
+    }
 }
 
 slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
@@ -238,13 +287,25 @@ slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
             if (handle_id == janus_->publisher_handle()) {
                 if (publisher_pc_) {
                     publisher_pc_->AddIceCandidate(mid, idx, cand);
+                } else {
+                    spdlog::warn(
+                        "[session] drop publisher remote ICE: no PC yet mid={} "
+                        "cand={}",
+                        mid, cand.substr(0, 80));
                 }
                 return;
             }
             auto it = subscriber_pcs_.find(handle_id);
-            if (it != subscriber_pcs_.end()) {
+            if (it != subscriber_pcs_.end() && it->second) {
                 it->second->AddIceCandidate(mid, idx, cand);
+                return;
             }
+            spdlog::warn(
+                "[session] queue remote ICE (no subscriber PC yet) handle={} "
+                "mid={} idx={} cand={}",
+                handle_id, mid, idx, cand.substr(0, 80));
+            pending_remote_ice_by_handle_[handle_id].push_back(
+                PendingRemoteIce{mid, idx, cand});
         });
     return {};
 }
@@ -313,6 +374,7 @@ void CallSession::dropSubscriber(uint64_t handle_id, const std::string& reason,
     // 幂等：hangup 与 PC failed 可能连续到达
     if (subscriber_pcs_.count(handle_id) == 0 &&
         handle_to_feed_.count(handle_id) == 0) {
+        clearPendingRemoteIce(handle_id);
         return;
     }
 
@@ -322,6 +384,7 @@ void CallSession::dropSubscriber(uint64_t handle_id, const std::string& reason,
         handle_to_feed_.erase(it);
     }
     subscriber_pcs_.erase(handle_id);
+    clearPendingRemoteIce(handle_id);
 
     if (feed_id == 0) {
         spdlog::warn("[session] dropSubscriber: no feed for handle={} ({})",
@@ -372,6 +435,7 @@ void CallSession::dropSubscriber(uint64_t handle_id, const std::string& reason,
     spdlog::warn("[session] give up subscribe feed={} after: {}", feed_id,
                  reason);
     subscriber_retry_count_.erase(feed_id);
+    remote_joined_notified_.erase(feed_id);
     if (auto* obs = XRtcGlobal::instance().observer()) {
         XRTCRemoteUser user;
         user.feed_id = feed_id;
@@ -438,6 +502,8 @@ void CallSession::cleanupMediaResources() {
         handle_to_feed_.clear();
         feed_to_display_.clear();
         subscriber_retry_count_.clear();
+        remote_joined_notified_.clear();
+        pending_remote_ice_by_handle_.clear();
         audio_track_ = nullptr;
         video_track_ = nullptr;
         video_source_ = nullptr;
@@ -814,12 +880,18 @@ void CallSession::createPublisherPc() {
         if (!isCurrentGeneration(gen)) {
             return;
         }
-        janus_->SendTrickle(janus_->publisher_handle(), mid, idx, cand);
+        const auto handle = janus_->publisher_handle();
+        spdlog::info(
+            "[session] send publisher trickle handle={} mid={} idx={} cand={}",
+            handle, mid, idx, cand.substr(0, 80));
+        janus_->SendTrickle(handle, mid, idx, cand);
     };
     pcb.on_ice_gathering_complete = [this, gen]() {
         if (!isCurrentGeneration(gen)) {
             return;
         }
+        spdlog::info("[session] send publisher trickle-complete handle={}",
+                     janus_->publisher_handle());
         janus_->SendTrickleComplete(janus_->publisher_handle());
     };
     pcb.on_connection_state = [this, gen](XRTCConnectionState state) {
@@ -854,6 +926,7 @@ void CallSession::createPublisherPc() {
     auto factory = XRtcGlobal::instance().GetOrCreatePeerConnectionFactory();
     publisher_pc_ =
         std::make_unique<PeerConnectionHandler>(factory, std::move(pcb));
+    publisher_pc_->SetLabel("publisher");
     if (auto st = publisher_pc_->Init(config_.ice_servers); !st) {
         publisher_pc_.reset();
         failJoin(st.error(), "publisher pc init failed");
@@ -910,6 +983,8 @@ slots_t<> CallSession::onJoinedAsPublisher() {
 
 void CallSession::onPublisherLocalSdp(const std::string& type,
                                       const std::string& sdp) {
+    spdlog::info("[session] publisher local SDP type={} bytes={} -> Publish",
+                 type, sdp.size());
     JanusJsep jsep;
     jsep.type = type;
     jsep.sdp = sdp;
@@ -919,6 +994,9 @@ void CallSession::onPublisherLocalSdp(const std::string& type,
 void CallSession::onSubscriberLocalSdp(uint64_t handle_id,
                                        const std::string& type,
                                        const std::string& sdp) {
+    spdlog::info(
+        "[session] subscriber local SDP handle={} type={} bytes={} -> start",
+        handle_id, type, sdp.size());
     JanusJsep jsep;
     jsep.type = type;
     jsep.sdp = sdp;

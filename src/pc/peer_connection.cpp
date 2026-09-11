@@ -1,6 +1,7 @@
 #include <pc/peer_connection.h>
 
 #include <atomic>
+#include <utility>
 
 #include "api/jsep.h"
 #include "api/make_ref_counted.h"
@@ -33,45 +34,57 @@ XRTCConnectionState ToXrtcState(
     return XRTCConnectionState::kNew;
 }
 
-///创建sdp描述的观察者,当创建本地sdp完成之后会回调这个类的OnSuccess函数,也即是将创建的sdp设置为本地sdp,之后会回调LocalSetObserver类的OnSuccess函数,
+std::string IceGatheringStateName(
+    webrtc::PeerConnectionInterface::IceGatheringState state) {
+    switch (state) {
+        case webrtc::PeerConnectionInterface::kIceGatheringNew:
+            return "new";
+        case webrtc::PeerConnectionInterface::kIceGatheringGathering:
+            return "gathering";
+        case webrtc::PeerConnectionInterface::kIceGatheringComplete:
+            return "complete";
+    }
+    return "unknown";
+}
+
+}  // namespace
+
+/// CreateOffer / CreateAnswer 异步完成后的回调
 class CreateSdpObserver : public webrtc::CreateSessionDescriptionObserver {
 public:
     CreateSdpObserver(
+        PeerConnectionHandler* handler,
         webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc,
         PeerConnectionHandler::Callbacks callbacks,
-        std::shared_ptr<std::atomic<bool>> alive,
-        bool /*is_offer*/)
-        : pc_(std::move(pc)),
+        std::shared_ptr<std::atomic<bool>> alive)
+        : handler_(handler),
+          pc_(std::move(pc)),
           callbacks_(std::move(callbacks)),
           alive_(std::move(alive)) {}
 
-    ///CreateOffer / CreateAnswer 异步完成后的回调：WebRTC 已经生成好本地 SDP，
-    ///这里把它取出来，并立刻设为 PeerConnection 的本地描述
     void OnSuccess(webrtc::SessionDescriptionInterface* desc) override {
         if (!alive_ || !alive_->load(std::memory_order_acquire) || !pc_) {
             delete desc;
             return;
         }
         std::string sdp;
-        desc->ToString(&sdp); //将sdp对象转换成字符串
-        //得到类型offer或者answer
+        desc->ToString(&sdp);
         const std::string type = webrtc::SdpTypeToString(desc->GetType());
-        //告诉pc,这份sdp是我本地的描述
-        //设置完本地sdp之后调用LocalSetObserver类的OnSuccess函数
-        //设置本地sdp描述成功的同时开始收集ice候选者,调用AddIceCandidate函数
-        //调用AddIceCandidate函数会有多次
+        spdlog::info("[pc:{}] Create{} ok, SetLocalDescription",
+                     handler_ ? handler_->label() : "?", type);
         pc_->SetLocalDescription(
-            webrtc::make_ref_counted<LocalSetObserver>(callbacks_, alive_, type,
-                                                       sdp)
+            webrtc::make_ref_counted<LocalSetObserver>(handler_, callbacks_,
+                                                       alive_, type, sdp)
                 .get(),
             desc);
     }
 
-    ///错误回调
     void OnFailure(webrtc::RTCError error) override {
         if (!alive_ || !alive_->load(std::memory_order_acquire)) {
             return;
         }
+        spdlog::error("[pc:{}] CreateSessionDescription failed: {}",
+                      handler_ ? handler_->label() : "?", error.message());
         RTC_LOG(LS_ERROR) << "CreateSessionDescription failed: "
                           << error.message();
         if (callbacks_.on_error) {
@@ -82,32 +95,34 @@ public:
 private:
     class LocalSetObserver : public webrtc::SetSessionDescriptionObserver {
     public:
-        LocalSetObserver(PeerConnectionHandler::Callbacks callbacks,
+        LocalSetObserver(PeerConnectionHandler* handler,
+                         PeerConnectionHandler::Callbacks callbacks,
                          std::shared_ptr<std::atomic<bool>> alive,
                          std::string type,
                          std::string sdp)
-            : callbacks_(std::move(callbacks)),
+            : handler_(handler),
+              callbacks_(std::move(callbacks)),
               alive_(std::move(alive)),
               type_(std::move(type)),
               sdp_(std::move(sdp)) {}
 
-        //SetLocalDescription 异步完成后的回调：
-        //WebRTC 已经将本地 SDP 设置到 PeerConnection 中，
-        //此处的回调函数是将sdp发送给janus
         void OnSuccess() override {
             if (!alive_ || !alive_->load(std::memory_order_acquire)) {
                 return;
             }
-            if (callbacks_.on_local_description) {
+            if (handler_) {
+                handler_->OnLocalDescriptionReady(type_, sdp_);
+            } else if (callbacks_.on_local_description) {
                 callbacks_.on_local_description(type_, sdp_);
             }
         }
 
-        ///错误回调
         void OnFailure(webrtc::RTCError error) override {
             if (!alive_ || !alive_->load(std::memory_order_acquire)) {
                 return;
             }
+            spdlog::error("[pc:{}] SetLocalDescription failed: {}",
+                          handler_ ? handler_->label() : "?", error.message());
             RTC_LOG(LS_ERROR) << "SetLocalDescription failed: "
                               << error.message();
             if (callbacks_.on_error) {
@@ -116,18 +131,18 @@ private:
         }
 
     private:
+        PeerConnectionHandler* handler_;
         PeerConnectionHandler::Callbacks callbacks_;
         std::shared_ptr<std::atomic<bool>> alive_;
         std::string type_;
         std::string sdp_;
     };
 
+    PeerConnectionHandler* handler_;
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc_;
     PeerConnectionHandler::Callbacks callbacks_;
     std::shared_ptr<std::atomic<bool>> alive_;
 };
-
-}  // namespace
 
 // Janus full-trickle 常在 answer 之前下发 candidate；须排队等 SetRemote 完成。
 class RemoteSetObserver
@@ -140,13 +155,13 @@ public:
           callbacks_(std::move(callbacks)),
           alive_(std::move(alive)) {}
 
-    ///SetRemoteDescription 异步完成后的回调：
-    ///WebRTC 已经将远端 SDP 设置到 PeerConnection 中，
     void OnSetRemoteDescriptionComplete(webrtc::RTCError error) override {
         if (!alive_ || !alive_->load(std::memory_order_acquire)) {
             return;
         }
         if (!error.ok()) {
+            spdlog::error("[pc:{}] SetRemoteDescription failed: {}",
+                          handler_ ? handler_->label() : "?", error.message());
             RTC_LOG(LS_ERROR) << "SetRemoteDescription failed: "
                               << error.message();
             if (callbacks_.on_error) {
@@ -155,9 +170,19 @@ public:
             }
             return;
         }
-        if (handler_ && handler_->pc_) {
-            handler_->remote_description_set_ = true;
-            handler_->FlushPendingIceCandidates();
+        if (!handler_ || !handler_->pc_) {
+            return;
+        }
+        handler_->remote_description_set_ = true;
+        spdlog::info(
+            "[pc:{}] SetRemoteDescription ok; flush {} queued remote ICE; "
+            "create_answer_pending={}",
+            handler_->label(), handler_->pending_remote_candidates_.size(),
+            handler_->create_answer_after_remote_);
+        handler_->FlushPendingRemoteIceCandidates();
+        if (handler_->create_answer_after_remote_) {
+            handler_->create_answer_after_remote_ = false;
+            handler_->DoCreateAnswer();
         }
     }
 
@@ -177,41 +202,40 @@ PeerConnectionHandler::~PeerConnectionHandler() {
 }
 
 Rest<> PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers) {
-    //在构造函数指定,如果还是nullptr,则返回错误
     if (!factory_) {
         return xrtc_err(XRtcError::kPeerConnectionFailed);
     }
 
-    //创建peerconnection是使用的配置结构体
     webrtc::PeerConnectionInterface::RTCConfiguration config;
-    //使用统一计划SDP语义,使用 Unified Plan SDP（现代 WebRTC 默认方式）
     config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
+    // Janus 要求 RTCP-mux；显式 Require 避免协商偏差
+    config.rtcp_mux_policy =
+        webrtc::PeerConnectionInterface::kRtcpMuxPolicyRequire;
+    config.bundle_policy =
+        webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
 
-    //如果传入的ice_servers为空,则使用默认的STUN服务器
     if (ice_servers.empty()) {
-        //创建一个ice服务器结构体
         webrtc::PeerConnectionInterface::IceServer stun;
-        //设置ice服务器的服务器地址,这里的默认地址是google的stun服务器
         stun.uri = "stun:stun.l.google.com:19302";
-        //将ice服务器结构体添加到配置结构体中
         config.servers.push_back(stun);
-    } else { //如果我们自己填写了ice服务器,则将ice服务器结构体添加到配置结构体中
-        for (const auto& s : ice_servers) { //遍历ice服务器结构体
-            webrtc::PeerConnectionInterface::IceServer server; //创建一个ice服务器结构体
-            server.uri = s.uri; //设置ice服务器的服务器地址
-            server.username = s.username; //设置ice服务器的服务器用户名
-            server.password = s.password; //设置ice服务器的服务器密码
-            config.servers.push_back(server); //将ice服务器结构体添加到配置结构体中
+    } else {
+        for (const auto& s : ice_servers) {
+            webrtc::PeerConnectionInterface::IceServer server;
+            server.uri = s.uri;
+            server.username = s.username;
+            server.password = s.password;
+            config.servers.push_back(server);
         }
     }
-    //创建peerconnection依赖的结构体,告诉工厂观察者是谁,可选的自定义工厂有哪些
-    //构造函数需要一个 PeerConnectionObserver*。
-    //PeerConnectionHandler 继承了 webrtc::PeerConnectionObserver
+    spdlog::info("[pc:{}] Init ice_servers={} bundle=max rtcp_mux=require",
+                 label_, config.servers.size());
+
     webrtc::PeerConnectionDependencies deps(this);
-    //创建peerconnection,返回一个结果,如果结果是ok的,则将peerconnection赋值给pc_
     auto result =
         factory_->CreatePeerConnectionOrError(config, std::move(deps));
     if (!result.ok()) {
+        spdlog::error("[pc:{}] CreatePeerConnection failed: {}", label_,
+                      result.error().message());
         RTC_LOG(LS_ERROR) << "CreatePeerConnection failed: "
                           << result.error().message();
         return xrtc_err(XRtcError::kPeerConnectionFailed);
@@ -224,13 +248,16 @@ Rest<> PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers
 }
 
 void PeerConnectionHandler::Close() {
-    // 先失效异步 observer，再清回调，避免 Close 过程中 OnTrack/ICE 再进业务逻辑
     if (alive_) {
         alive_->store(false, std::memory_order_release);
     }
     callbacks_ = {};
     pending_remote_candidates_.clear();
+    pending_local_candidates_.clear();
     remote_description_set_ = false;
+    create_answer_after_remote_ = false;
+    local_description_notified_ = false;
+    gathering_complete_pending_ = false;
     if (pc_) {
         pc_->Close();
         pc_ = nullptr;
@@ -240,11 +267,9 @@ void PeerConnectionHandler::Close() {
 Rest<> PeerConnectionHandler::AddTrack(
     webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
     const std::vector<std::string>& stream_ids) {
-    //如果peerconnection为空或者媒体轨道为空,则返回错误
     if (!pc_ || !track) {
         return xrtc_err(XRtcError::kInvalidParam);
     }
-    //将媒体轨道添加到peerconnection中
     auto result = pc_->AddTrack(track, stream_ids);
     if (!result.ok()) {
         RTC_LOG(LS_ERROR) << "AddTrack failed: " << result.error().message();
@@ -253,29 +278,11 @@ Rest<> PeerConnectionHandler::AddTrack(
     return xrtc_ok();
 }
 
-namespace {
-
-int EstimateVideoBitrateBps(int width, int height) {
-    const int pixels = (width > 0 && height > 0) ? (width * height) : (1280 * 720);
-    if (pixels <= 640 * 480) {
-        return 800 * 1000;
-    }
-    if (pixels <= 1280 * 720) {
-        return 1500 * 1000;
-    }
-    if (pixels <= 1920 * 1080) {
-        return 2500 * 1000;
-    }
-    return 3500 * 1000;
-}
-
-}  // namespace
-
 void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps) {
     if (!pc_) {
         return;
     }
-    const int max_bitrate = EstimateVideoBitrateBps(width, height);
+    // 不设 max_bitrate_bps：交给 WebRTC 拥塞控制自适应，便于排查卡顿是否被硬上限卡住
     const double max_fps = fps > 0 ? static_cast<double>(fps) : 30.0;
 
     for (const auto& sender : pc_->GetSenders()) {
@@ -294,17 +301,17 @@ void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps) {
         params.degradation_preference =
             webrtc::DegradationPreference::BALANCED;
         if (!params.encodings.empty()) {
-            params.encodings[0].max_bitrate_bps = max_bitrate;
+            params.encodings[0].max_bitrate_bps.reset();
             params.encodings[0].max_framerate = max_fps;
         }
         const webrtc::RTCError err = sender->SetParameters(params);
         if (!err.ok()) {
-            spdlog::warn("[pc] ConfigureVideoSend SetParameters failed: {}",
-                         err.message());
+            spdlog::warn("[pc:{}] ConfigureVideoSend SetParameters failed: {}",
+                         label_, err.message());
         } else {
             spdlog::info(
-                "[pc] ConfigureVideoSend {}x{}@{} max_bitrate={}bps", width,
-                height, static_cast<int>(max_fps), max_bitrate);
+                "[pc:{}] ConfigureVideoSend {}x{}@{} max_bitrate=unlimited",
+                label_, width, height, static_cast<int>(max_fps));
         }
         break;
     }
@@ -314,11 +321,10 @@ void PeerConnectionHandler::CreateOffer() {
     if (!pc_) {
         return;
     }
-    //异步调用,此函数会异步设置本地sdp描述并异步发送给janus
-    //先创建本地sdp描述,创建完之后会回调CreateSdpObserver类的OnSuccess函数,之后会回调LocalSetObserver类的OnSuccess函数
+    spdlog::info("[pc:{}] CreateOffer", label_);
     pc_->CreateOffer(
-        webrtc::make_ref_counted<CreateSdpObserver>(pc_, callbacks_, alive_,
-                                                    true)
+        webrtc::make_ref_counted<CreateSdpObserver>(this, pc_, callbacks_,
+                                                    alive_)
             .get(),
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions());
 }
@@ -327,42 +333,72 @@ void PeerConnectionHandler::CreateAnswer() {
     if (!pc_) {
         return;
     }
+    if (!remote_description_set_) {
+        create_answer_after_remote_ = true;
+        spdlog::info(
+            "[pc:{}] defer CreateAnswer until SetRemoteDescription completes",
+            label_);
+        return;
+    }
+    DoCreateAnswer();
+}
+
+void PeerConnectionHandler::DoCreateAnswer() {
+    if (!pc_) {
+        return;
+    }
+    spdlog::info("[pc:{}] CreateAnswer", label_);
     pc_->CreateAnswer(
-        webrtc::make_ref_counted<CreateSdpObserver>(pc_, callbacks_, alive_,
-                                                     false)
+        webrtc::make_ref_counted<CreateSdpObserver>(this, pc_, callbacks_,
+                                                    alive_)
             .get(),
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions());
 }
 
 void PeerConnectionHandler::SetRemoteDescription(const std::string& type,
                                                  const std::string& sdp) {
-    //如果peerconnection为空,则返回
     if (!pc_) {
         return;
     }
-    //将sdp类型转换成webrtc的sdp类型
     auto sdp_type = webrtc::SdpTypeFromString(type);
-    //如果转换失败,则返回
     if (!sdp_type) {
-        //如果转换失败,则返回
         if (callbacks_.on_error) {
             callbacks_.on_error("Unknown SDP type: " + type);
         }
         return;
     }
-    //创建sdp描述对象
     auto desc = webrtc::CreateSessionDescription(*sdp_type, sdp);
     if (!desc) {
-        //如果创建失败,则返回
         if (callbacks_.on_error) {
             callbacks_.on_error("Failed to parse remote SDP");
         }
         return;
     }
-    //将sdp描述对象设置到peerconnection中
+    spdlog::info("[pc:{}] SetRemoteDescription type={} sdp_bytes={}", label_,
+                 type, sdp.size());
     pc_->SetRemoteDescription(
         std::move(desc),
         webrtc::make_ref_counted<RemoteSetObserver>(this, callbacks_, alive_));
+}
+
+void PeerConnectionHandler::OnLocalDescriptionReady(const std::string& type,
+                                                    const std::string& sdp) {
+    spdlog::info(
+        "[pc:{}] local description ready type={} sdp_bytes={}; notify signaling "
+        "then flush local ICE",
+        label_, type, sdp.size());
+    if (callbacks_.on_local_description) {
+        callbacks_.on_local_description(type, sdp);
+    }
+    local_description_notified_ = true;
+    FlushPendingLocalIceCandidates();
+    if (gathering_complete_pending_) {
+        gathering_complete_pending_ = false;
+        spdlog::info("[pc:{}] emit deferred ice gathering complete", label_);
+        if (callbacks_.on_ice_gathering_complete) {
+            callbacks_.on_ice_gathering_complete();
+        }
+    }
 }
 
 void PeerConnectionHandler::AddIceCandidate(const std::string& sdp_mid,
@@ -372,8 +408,9 @@ void PeerConnectionHandler::AddIceCandidate(const std::string& sdp_mid,
         return;
     }
     if (!remote_description_set_) {
-        RTC_LOG(LS_INFO) << "Queue remote ICE candidate until SetRemoteDescription: "
-                         << candidate.substr(0, 80);
+        spdlog::info(
+            "[pc:{}] queue remote ICE until SetRemote mid={} idx={} cand={}",
+            label_, sdp_mid, mline_index, candidate.substr(0, 80));
         pending_remote_candidates_.push_back(
             PendingIceCandidate{sdp_mid, mline_index, candidate});
         return;
@@ -391,22 +428,41 @@ void PeerConnectionHandler::ApplyIceCandidate(const std::string& sdp_mid,
     std::unique_ptr<webrtc::IceCandidate> ice(
         webrtc::CreateIceCandidate(sdp_mid, mline_index, candidate, &error));
     if (!ice) {
+        spdlog::warn("[pc:{}] CreateIceCandidate failed: {} cand={}", label_,
+                     error.description, candidate.substr(0, 80));
         RTC_LOG(LS_WARNING) << "CreateIceCandidate failed: " << error.description;
         return;
     }
-    if (!pc_->AddIceCandidate(ice.get())) {
-        RTC_LOG(LS_WARNING) << "AddIceCandidate rejected: " << candidate.substr(0, 80);
-    } else {
-        RTC_LOG(LS_INFO) << "AddIceCandidate ok: " << candidate.substr(0, 80);
-    }
+    // 回调版挂到 operations chain，避免旧 bool API 在错误状态下静默失败
+    auto* raw = ice.get();
+    const std::string mid = raw->sdp_mid();
+    const int idx = raw->sdp_mline_index();
+    const std::string cand_preview = candidate.substr(0, 80);
+    pc_->AddIceCandidate(
+        std::move(ice),
+        [label = label_, alive = alive_, mid, idx, cand_preview](
+            webrtc::RTCError err) {
+            if (!alive || !alive->load(std::memory_order_acquire)) {
+                return;
+            }
+            if (!err.ok()) {
+                spdlog::warn(
+                    "[pc:{}] AddIceCandidate rejected mid={} idx={} err={} "
+                    "cand={}",
+                    label, mid, idx, err.message(), cand_preview);
+            } else {
+                spdlog::info("[pc:{}] AddIceCandidate ok mid={} idx={} cand={}",
+                             label, mid, idx, cand_preview);
+            }
+        });
 }
 
-void PeerConnectionHandler::FlushPendingIceCandidates() {
+void PeerConnectionHandler::FlushPendingRemoteIceCandidates() {
     if (pending_remote_candidates_.empty()) {
         return;
     }
-    RTC_LOG(LS_INFO) << "Flushing " << pending_remote_candidates_.size()
-                     << " queued remote ICE candidate(s)";
+    spdlog::info("[pc:{}] flushing {} queued remote ICE candidate(s)", label_,
+                 pending_remote_candidates_.size());
     auto pending = std::move(pending_remote_candidates_);
     pending_remote_candidates_.clear();
     for (const auto& c : pending) {
@@ -414,36 +470,54 @@ void PeerConnectionHandler::FlushPendingIceCandidates() {
     }
 }
 
+void PeerConnectionHandler::FlushPendingLocalIceCandidates() {
+    if (pending_local_candidates_.empty()) {
+        return;
+    }
+    spdlog::info(
+        "[pc:{}] flushing {} queued local ICE candidate(s) after local SDP",
+        label_, pending_local_candidates_.size());
+    auto pending = std::move(pending_local_candidates_);
+    pending_local_candidates_.clear();
+    for (const auto& c : pending) {
+        if (callbacks_.on_ice_candidate) {
+            callbacks_.on_ice_candidate(c.sdp_mid, c.mline_index, c.candidate);
+        }
+    }
+}
+
 void PeerConnectionHandler::MuteAudio(bool mute) {
-    //没有pc就返回
     if (!pc_) {
         return;
     }
-    //遍历所有 Sender（本端往外发的轨）
     for (const auto& sender : pc_->GetSenders()) {
-        //找到 音频轨（kAudioKind）
         auto track = sender->track();
         if (track && track->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
-            //设置音频轨是否启用
             track->set_enabled(!mute);
         }
     }
 }
 
 void PeerConnectionHandler::MuteVideo(bool mute) {
-    //没有pc就返回
     if (!pc_) {
         return;
     }
-    //遍历所有 Sender（本端往外发的轨）
     for (const auto& sender : pc_->GetSenders()) {
-        //找到 视频轨（kVideoKind）
         auto track = sender->track();
         if (track && track->kind() == webrtc::MediaStreamTrackInterface::kVideoKind) {
-            //设置视频轨是否启用
             track->set_enabled(!mute);
         }
     }
+}
+
+void PeerConnectionHandler::OnIceConnectionChange(
+    webrtc::PeerConnectionInterface::IceConnectionState new_state) {
+    if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+        return;
+    }
+    spdlog::info("[pc:{}] ice_connection_state={}", label_,
+                 std::string(webrtc::PeerConnectionInterface::AsString(
+                     new_state)));
 }
 
 void PeerConnectionHandler::OnIceGatheringChange(
@@ -451,9 +525,19 @@ void PeerConnectionHandler::OnIceGatheringChange(
     if (!alive_ || !alive_->load(std::memory_order_acquire)) {
         return;
     }
-    if (new_state ==
-            webrtc::PeerConnectionInterface::kIceGatheringComplete &&
-        callbacks_.on_ice_gathering_complete) {
+    spdlog::info("[pc:{}] ice_gathering_state={}", label_,
+                 IceGatheringStateName(new_state));
+    if (new_state != webrtc::PeerConnectionInterface::kIceGatheringComplete) {
+        return;
+    }
+    if (!local_description_notified_) {
+        gathering_complete_pending_ = true;
+        spdlog::info(
+            "[pc:{}] defer ice gathering complete until local SDP notified",
+            label_);
+        return;
+    }
+    if (callbacks_.on_ice_gathering_complete) {
         callbacks_.on_ice_gathering_complete();
     }
 }
@@ -474,11 +558,36 @@ void PeerConnectionHandler::OnIceCandidate(
         typ_pos == std::string::npos ? cand : cand.substr(0, typ_pos);
     if (head.find(':') != std::string::npos &&
         head.find('.') == std::string::npos) {
-        RTC_LOG(LS_INFO) << "Skip IPv6 ICE candidate: " << cand.substr(0, 80);
+        spdlog::info("[pc:{}] skip IPv6 ICE candidate: {}", label_,
+                     cand.substr(0, 80));
         return;
     }
-    callbacks_.on_ice_candidate(candidate->sdp_mid(),
-                                candidate->sdp_mline_index(), cand);
+    const std::string mid = candidate->sdp_mid();
+    const int idx = candidate->sdp_mline_index();
+    if (!local_description_notified_) {
+        spdlog::info(
+            "[pc:{}] queue local ICE until local SDP sent mid={} idx={} cand={}",
+            label_, mid, idx, cand.substr(0, 80));
+        pending_local_candidates_.push_back(
+            PendingIceCandidate{mid, idx, std::move(cand)});
+        return;
+    }
+    spdlog::info("[pc:{}] local ICE mid={} idx={} cand={}", label_, mid, idx,
+                 cand.substr(0, 80));
+    callbacks_.on_ice_candidate(mid, idx, cand);
+}
+
+void PeerConnectionHandler::OnIceCandidateError(const std::string& address,
+                                                int port,
+                                                const std::string& url,
+                                                int error_code,
+                                                const std::string& error_text) {
+    if (!alive_ || !alive_->load(std::memory_order_acquire)) {
+        return;
+    }
+    spdlog::warn(
+        "[pc:{}] ice_candidate_error addr={}:{} url={} code={} text={}", label_,
+        address, port, url, error_code, error_text);
 }
 
 void PeerConnectionHandler::OnTrack(
@@ -493,7 +602,10 @@ void PeerConnectionHandler::OnTrack(
     if (!receiver) {
         return;
     }
-    callbacks_.on_track(receiver->track());
+    auto track = receiver->track();
+    spdlog::info("[pc:{}] OnTrack kind={}", label_,
+                 track ? track->kind() : "?");
+    callbacks_.on_track(track);
 }
 
 void PeerConnectionHandler::OnConnectionChange(
@@ -501,6 +613,9 @@ void PeerConnectionHandler::OnConnectionChange(
     if (!alive_ || !alive_->load(std::memory_order_acquire)) {
         return;
     }
+    spdlog::info("[pc:{}] connection_state={}", label_,
+                 std::string(webrtc::PeerConnectionInterface::AsString(
+                     new_state)));
     if (callbacks_.on_connection_state) {
         callbacks_.on_connection_state(ToXrtcState(new_state));
     }

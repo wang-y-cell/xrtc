@@ -9,7 +9,9 @@
 
 namespace xrtc {
 
-/// Boost.Beast WebSocket 客户端（无 Qt）；事件用 utils::signal
+/// Boost.Beast WebSocket 客户端, 用来连接janus服务器,并进行握手和数据传输,
+/// 这个类只处理websocket的连接和数据传输,不处理janus服务器的事件处理,
+/// 发送的消息的格式由janus_client类控制,它包含这个类的实例,用来在websocket的基础上发送消息
 class WebsocketTransport : public utils::object {
 public:
     WebsocketTransport();
@@ -27,7 +29,7 @@ public:
     //解析这个url之后连接这个服务器,并开启网络线程,线程运行事件循环,
     // 等待网络事件的发生,websocket握手完成,可以接收数据和发送数据(send_text)
     Rest<> open(const std::string& url);
-    //发送消息到服务端
+    //发送消息到服务端,真正发送消息的函数,但是由jansu_client调用,用来发送正真的janus信令信息
     void send_text(const std::string& text);
     //关闭连接
     void close();

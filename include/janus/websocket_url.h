@@ -13,6 +13,10 @@ struct WebsocketUrlParts {
 };
 
 /// 解析 ws:// / wss:// URL；端口非法时返回 false（不抛异常）
+/// 这个函数用来解析websocket的url,提取出地址,端口,路径等信息,将提取的信息放在WebsocketUrlParts结构体中
+/// @param url 要解析的url字符串
+/// @param out 存放解析结果的结构体指针
+/// @return 如果解析成功,返回true,否则返回false
 inline bool ParseWebsocketUrl(const std::string& url, WebsocketUrlParts* out) {
     if (!out) {
         return false;

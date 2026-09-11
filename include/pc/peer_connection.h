@@ -37,6 +37,10 @@ public:
     Rest<> Init(const std::vector<XRTCIceServer>& ice_servers);
     void Close();
 
+    /// 仅用于日志区分 publisher / subscriber
+    void SetLabel(std::string label) { label_ = std::move(label); }
+    const std::string& label() const { return label_; }
+
     /// Close 后置 false；异步 observer 持有 shared_ptr 副本，避免 UAF
     std::shared_ptr<std::atomic<bool>> alive_flag() const { return alive_; }
 
@@ -48,10 +52,15 @@ public:
     void ConfigureVideoSend(int width, int height, int fps);
 
     void CreateOffer();
+    /// 若 SetRemote 尚未完成则延后到完成后再 CreateAnswer
     void CreateAnswer();
     void SetRemoteDescription(const std::string& type, const std::string& sdp);
     void AddIceCandidate(const std::string& sdp_mid, int mline_index,
                          const std::string& candidate);
+
+    /// SetLocal 成功后：先通知信令，再放行本地 trickle
+    void OnLocalDescriptionReady(const std::string& type,
+                                 const std::string& sdp);
 
     void MuteAudio(bool mute);
     void MuteVideo(bool mute);
@@ -66,10 +75,15 @@ public:
         webrtc::scoped_refptr<webrtc::DataChannelInterface>) override {}
     void OnRenegotiationNeeded() override {}
     void OnIceConnectionChange(
-        webrtc::PeerConnectionInterface::IceConnectionState) override {}
+        webrtc::PeerConnectionInterface::IceConnectionState new_state) override;
     void OnIceGatheringChange(
         webrtc::PeerConnectionInterface::IceGatheringState new_state) override;
     void OnIceCandidate(const webrtc::IceCandidate* candidate) override;
+    void OnIceCandidateError(const std::string& address,
+                             int port,
+                             const std::string& url,
+                             int error_code,
+                             const std::string& error_text) override;
     void OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>
                      transceiver) override;
     void OnConnectionChange(
@@ -77,6 +91,7 @@ public:
 
 private:
     friend class RemoteSetObserver;
+    friend class CreateSdpObserver;
 
     struct PendingIceCandidate {
         std::string sdp_mid;
@@ -84,15 +99,25 @@ private:
         std::string candidate;
     };
 
+    void DoCreateAnswer();
     void ApplyIceCandidate(const std::string& sdp_mid, int mline_index,
                            const std::string& candidate);
-    void FlushPendingIceCandidates();
+    void FlushPendingRemoteIceCandidates();
+    void FlushPendingLocalIceCandidates();
 
     webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc_;
     Callbacks callbacks_;
+    std::string label_ = "pc";
+
     bool remote_description_set_ = false;
+    bool create_answer_after_remote_ = false;
+    /// 本地 SDP 已通过回调交给信令（Publish / StartSubscriber）之后才 trickle
+    bool local_description_notified_ = false;
+    bool gathering_complete_pending_ = false;
+
     std::vector<PendingIceCandidate> pending_remote_candidates_;
+    std::vector<PendingIceCandidate> pending_local_candidates_;
     std::shared_ptr<std::atomic<bool>> alive_ =
         std::make_shared<std::atomic<bool>>(true);
 };

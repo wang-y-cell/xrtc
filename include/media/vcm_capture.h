@@ -14,7 +14,10 @@
 
 namespace xrtc {
 
-/// 任何需要获取视频帧的模块，都需要继承webrtc::VideoSinkInterface并实现这个接口
+
+/// @brief 这个类主要负责摄像头选择, 视频的采集和处理, 视频帧的回调等
+/// 同时这个类还负责将视频接入视频流轨道
+/// @param VideoSinkInterface 任何需要获取视频帧的模块，都需要继承webrtc::VideoSinkInterface并实现这个接口
 ///实现了该接口的类，必须重写 OnFrame(const webrtc::VideoFrame& frame) 方法。当上游的视频轨道（VideoTrack）有新的视频帧可用时，WebRTC 引擎会自动调用这个方法来分发数据
 ///模板参数 webrtc::VideoFrame 起到了指定数据类型的作用
 class VcmCapture : public IXRtcMediaSource,

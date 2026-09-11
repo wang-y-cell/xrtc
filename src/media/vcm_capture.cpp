@@ -333,7 +333,9 @@ void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
         buffer = scaled;
     }
 
-    observer->on_video_frame(this, MakeXRTCVideoFrame(std::move(buffer)));
+    XRTCVideoFrame out = MakeXRTCVideoFrame(std::move(buffer), frame);
+    out.rotation_degrees = 0;
+    observer->on_video_frame(this, out);
 }
 
 void VcmCapture::release_vcm() {

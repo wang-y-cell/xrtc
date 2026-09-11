@@ -405,6 +405,7 @@ public:
     JanusClient& operator=(const JanusClient&) = delete;
 
     utils::signal<> joined_as_publisher{this};
+    /// 房间中有人在推流,将推流者的信息发送给call_session
     utils::signal<std::vector<JanusPublisherInfo>> publishers{this};
     utils::signal<uint64_t, std::string> publisher_left{this};
     utils::signal<JanusJsep> publisher_answer{this};
@@ -436,7 +437,7 @@ public:
     void Subscribe(uint64_t feed_id);
 	/// 远端离开时 detach 对应 subscriber handle，释放 Janus 侧资源
     void DetachSubscriber(uint64_t feed_id);
-	///开始订阅远端发布者,订阅远端发布者,发送attach请求,附加订阅者插件,拿到订阅者用的 plugin handle
+
 	///把本地生成的 SDP answer 发给 Janus，正式开始拉该路流
     void StartSubscriber(uint64_t handle_id, const JanusJsep& answer);
 

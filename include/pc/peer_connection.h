@@ -16,11 +16,14 @@ namespace xrtc {
 class PeerConnectionHandler : public webrtc::PeerConnectionObserver {
 public:
     struct Callbacks {
+        /// 本地sdp描述,当本地sdp描述就绪后,会调用这个回调函数,将sdp描述发送给janus服务器
         std::function<void(const std::string& type, const std::string& sdp)>
             on_local_description;
+        /// 当收到远端ice候选时,会调用这个回调函数,将本地的ice候选发送给janus服务器
         std::function<void(const std::string& sdp_mid, int mline_index,
                            const std::string& candidate)>
             on_ice_candidate;
+        /// 当ice收集完成时,会调用这个回调函数,将ice收集完成信号发送给janus服务器
         std::function<void()> on_ice_gathering_complete;
         std::function<void(
             webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>)>

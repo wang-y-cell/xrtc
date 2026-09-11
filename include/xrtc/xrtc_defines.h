@@ -112,6 +112,7 @@ struct XRTCRemoteUser {
 
 /// 预览用 I420 帧（供 OpenGL 等直接上传 Y/U/V）。
 /// data_* 在 storage 存活期间有效；strides 可能大于 width/chroma_width。
+/// 时间戳/旋转供客户端音画同步或按点渲染；SDK Demo 可不使用。
 struct XRTCVideoFrame {
     int width = 0;
     int height = 0;
@@ -123,6 +124,18 @@ struct XRTCVideoFrame {
     const uint8_t* data_v = nullptr;
     /// 持有底层 I420 缓冲（如 webrtc::I420BufferInterface）
     std::shared_ptr<void> storage;
+
+    /// 单调时钟微秒（与 webrtc::TimeMicros 同一时基）
+    int64_t timestamp_us = 0;
+    /// NTP 毫秒，便于与音频对齐；没有则为 0
+    int64_t ntp_time_ms = 0;
+    /// RTP 90kHz 时间戳
+    uint32_t rtp_timestamp = 0;
+    /// 建议渲染时刻（毫秒）；没有有效值时可能为 0
+    int64_t render_time_ms = 0;
+    /// 采集/编码侧旋转：0 / 90 / 180 / 270。
+    /// 当前 SDK 在交给观察者前会把像素转正，故回调里通常为 0。
+    int rotation_degrees = 0;
 
     [[nodiscard]] bool valid() const {
         return storage && data_y && data_u && data_v && width > 0 && height > 0 &&

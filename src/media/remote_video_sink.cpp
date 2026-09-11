@@ -51,7 +51,10 @@ void RemoteVideoSink::OnFrame(const webrtc::VideoFrame& frame) {
         buffer = scaled;
     }
 
-    callback_(feed_id_, MakeXRTCVideoFrame(std::move(buffer)));
+    XRTCVideoFrame out = MakeXRTCVideoFrame(std::move(buffer), frame);
+    // 像素已按 rotation 转正，避免客户端再旋转
+    out.rotation_degrees = 0;
+    callback_(feed_id_, out);
 }
 
 }  // namespace xrtc

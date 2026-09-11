@@ -225,10 +225,10 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
             }
             // 先入 map，再 SetRemote/Answer，避免 Janus trickle 早到被丢
             auto* pc_ptr = pc.get();
-            subscriber_pcs_[handle_id] = std::move(pc);
-            flushPendingRemoteIce(handle_id);
-            pc_ptr->SetRemoteDescription(offer.type, offer.sdp);
-            pc_ptr->CreateAnswer();
+            subscriber_pcs_[handle_id] = std::move(pc); //pc创建完成,保存到map中,key为handle_id,value为pc
+            flushPendingRemoteIce(handle_id); //查看是否有保存的janus发送的trickle,如果有,则加入ice候选
+            pc_ptr->SetRemoteDescription(offer.type, offer.sdp); //同时将远端的sdp设置到pc中
+            pc_ptr->CreateAnswer(); //创建answer,answer是本地的sdp描述,用来和远端的sdp进行匹配
 
             if (remote_joined_notified_[feed_id]) {
                 spdlog::info(
@@ -284,6 +284,7 @@ slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
             if (!isCurrentGeneration(gen)) {
                 return;
             }
+            //作为发布者收到远端ice候选
             if (handle_id == janus_->publisher_handle()) {
                 if (publisher_pc_) {
                     publisher_pc_->AddIceCandidate(mid, idx, cand);
@@ -295,8 +296,10 @@ slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
                 }
                 return;
             }
-            auto it = subscriber_pcs_.find(handle_id);
-            if (it != subscriber_pcs_.end() && it->second) {
+            //作为订阅者收到远端ice候选
+            auto it = subscriber_pcs_.find(handle_id); //找到对应的订阅者pc,查看是否创建pc
+            //janus发送trickle的时候,本地的pc可能还没有建立好,所以这个为空,我们先保存这个trickle,随后处理
+            if (it != subscriber_pcs_.end() && it->second) { //如果pc已经创建,则直接加入ice候选
                 it->second->AddIceCandidate(mid, idx, cand);
                 return;
             }
@@ -304,6 +307,8 @@ slots_t<> CallSession::onRemoteCandidate(uint64_t handle_id,
                 "[session] queue remote ICE (no subscriber PC yet) handle={} "
                 "mid={} idx={} cand={}",
                 handle_id, mid, idx, cand.substr(0, 80));
+
+            //到了这里表示这个trickle确实是本地的pc还没有建立好,我们保存这个handle_id对应的trickle,随后处理
             pending_remote_ice_by_handle_[handle_id].push_back(
                 PendingRemoteIce{mid, idx, cand});
         });
@@ -681,7 +686,7 @@ Rest<> CallSession::StopLocalVideo() {
 
             if (auto* obs = XRtcGlobal::instance().observer()) {
                 obs->on_video_frame(capture_.get(),
-                                    MakeXRTCVideoFrame(buffer));
+                                    MakeXRTCVideoFrame(buffer, frame));
             }
         }
         if (capture_) {

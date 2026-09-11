@@ -21,7 +21,7 @@ public:
     virtual void video_source_stop_event(IXRtcMediaSource* video_source,
                                          XRtcError error) {}
 
-    // 本地/远端视频帧（I420，供 OpenGL 等上传 Y/U/V）
+    // 本地/远端视频帧（I420 + 时间戳/旋转，供 OpenGL 或客户端自行同步）
     virtual void on_video_frame(IXRtcMediaSource* video_source,
                                 const XRTCVideoFrame& frame) {}
 
@@ -35,7 +35,7 @@ public:
 
     virtual void on_remote_user_left(const XRTCRemoteUser& user) {}
 
-    // 远端视频帧；实现侧应尽快返回，并自行切到 UI 线程渲染
+    // 远端视频帧（含 timestamp_us / ntp / rtp / rotation）；尽快返回并切 UI 线程
     virtual void on_remote_video_frame(uint64_t feed_id,
                                        const XRTCVideoFrame& frame) {}
 

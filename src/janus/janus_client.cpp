@@ -358,7 +358,7 @@ utils::slots_t<> JanusClient::on_ws_message(const std::string& text) {
         //以发布者身份进房
         //有人开始推流,退出,房间出错,都会进入这里
         handle_event(msg);
-    } else if (janus == "trickle") {
+    } else if (janus == "trickle") { //接收janus的ice候选
         //ICE 候选交换
         handle_trickle(msg);
     } else if (janus == "hangup") {
@@ -565,6 +565,24 @@ void JanusClient::handle_event(const json& msg) {
             //调用槽函数,我们需要将janus的sdp注册到我们本地中
             publisher_answer.emit(jsep);
         } else if (jsep.type == "offer") { //作为订阅者收到远端对象的sdp offer
+            /*
+            {
+                "janus": "event",
+                "session_id": 5941003581048891,
+                "sender": 2881316821259561,
+                "plugindata": {
+                    "plugin": "janus.plugin.videoroom",
+                    "data": {
+                    "videoroom": "attached",
+                    "room": 1234
+                    }
+                },
+                "jsep": {
+                    "type": "offer",
+                    "sdp": "v=0\r\no=- ...\r\ns=...\r\n..."
+                }
+            } 
+            */
             //获得我们要订阅的远端对象的feed_id
             uint64_t feed = subscribe_state_.FeedForHandle(handle_id).value_or(0);
             //发送订阅者offer信号,将我们要订阅的远端对象的feed_id和handle_id发送给call_session

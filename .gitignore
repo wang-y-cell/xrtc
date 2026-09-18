@@ -3,9 +3,14 @@
 .vscode/
 build/
 
-# WebRTC 预编译 SDK（头文件约 300MB+ + webrtc.lib 约 700MB，用脚本同步）
+# WebRTC 预编译 SDK（头文件约 300MB+ + webrtc.lib 约 700MB，CMake 配置时自动下载）
 webrtc/include/
 webrtc/lib_release/
 webrtc/lib_debug/
+# nlohmann/json、Boost：CMake 从 GitHub Release 下载解压
+third_party/json/
+third_party/boost-*/
+third_party/boost_*/
+docs/
 *.log
 update_note.md

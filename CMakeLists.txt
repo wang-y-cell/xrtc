@@ -1,6 +1,21 @@
 cmake_minimum_required(VERSION 3.19)
 project(webrtc_test LANGUAGES C CXX)
 
+if(POLICY CMP0144)
+    cmake_policy(SET CMP0144 NEW)
+endif()
+
+# webrtc.lib / Qt msvc2022_64 都是 MSVC ABI，不能用 MinGW
+if(WIN32 AND NOT MSVC)
+    message(FATAL_ERROR
+        "本工程必须用 MSVC x64（cl.exe），当前编译器是 "
+        "${CMAKE_CXX_COMPILER} (${CMAKE_CXX_COMPILER_ID}).\n"
+        "请在 x64 Native Tools Command Prompt 或先执行 vcvars64.bat，"
+        "删掉构建目录后重新配置，并指定:\n"
+        "  -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl\n"
+        "不要使用 MinGW（PATH 里的 F:/mingw/.../c++.exe 会被 CMake 误选）。")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -11,62 +26,189 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     endif()
 endif()
 
+set(XRTC_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
-# set(BUILD_XRTC_DEMO ON)
-# set(Boost_ROOT "F:/wy/boost_install" CACHE PATH "Path to Boost top-level directory")
-# set(QT6_ROOT "F:/Qt/6.8.3/msvc2022_64" CACHE PATH "Path to Qt top-level directory")
-
-# WebRTC 预编译 SDK
-# 布局：webrtc/include + webrtc/lib_debug/webrtc.lib + webrtc/lib_release/webrtc.lib
-# 缺失时从 GitHub Release 自动下载 webrtc.7z
-set(WEBRTC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/webrtc" CACHE PATH
-    "WebRTC SDK root (expect include/ + lib_debug/ + lib_release/)")
-set(WEBRTC_RELEASE_URL
-    "https://github.com/wang-y-cell/xrtc/releases/download/v1.0.0/webrtc.7z"
-    CACHE STRING "GitHub Release URL for webrtc.7z")
-set(WEBRTC_INCLUDE "${WEBRTC_ROOT}/include")
-set(WEBRTC_LIB_DEBUG_DIR "${WEBRTC_ROOT}/lib_debug")
-set(WEBRTC_LIB_RELEASE_DIR "${WEBRTC_ROOT}/lib_release")
-
-function(xrtc_ensure_webrtc_sdk)
-    # 如果预编译 SDK 存在，则直接使用
-    if(EXISTS "${WEBRTC_INCLUDE}/api/peer_connection_interface.h"
-       AND EXISTS "${WEBRTC_LIB_DEBUG_DIR}/webrtc.lib"
-       AND EXISTS "${WEBRTC_LIB_RELEASE_DIR}/webrtc.lib")
+# 下载 GitHub Release 压缩包并解压到 dest（marker 已存在则跳过）
+function(xrtc_fetch_archive)
+    set(oneValueArgs URL ARCHIVE DEST MARKER)
+    cmake_parse_arguments(FETCH "" "${oneValueArgs}" "" ${ARGN})
+    if(FETCH_MARKER AND EXISTS "${FETCH_MARKER}")
         return()
     endif()
 
-    # 打印准备开始下载信息
-    message(STATUS "WebRTC SDK missing under ${WEBRTC_ROOT}, downloading...")
-    set(_archive "${CMAKE_BINARY_DIR}/webrtc.7z")
-    file(DOWNLOAD "${WEBRTC_RELEASE_URL}" "${_archive}"
-        SHOW_PROGRESS #显示下载进度
-        STATUS _dl_status #将下载结果存入列表。紧接着通过 list(GET _dl_status 0 _dl_code) 检查返回码，如果不是 0，就抛出 FATAL_ERROR 并附带错误信息。这比 CMake 默认的网络报错要清晰得多
-        TLS_VERIFY ON) #强制验证 HTTPS 证书，防止中间人攻击，保证了极高的安全性
+    message(STATUS "Downloading ${FETCH_URL}")
+    set(_archive "${CMAKE_BINARY_DIR}/${FETCH_ARCHIVE}")
+    file(DOWNLOAD "${FETCH_URL}" "${_archive}"
+        SHOW_PROGRESS
+        STATUS _dl_status
+        TLS_VERIFY ON
+        TIMEOUT 1800
+        INACTIVITY_TIMEOUT 120)
     list(GET _dl_status 0 _dl_code)
     if(NOT _dl_code EQUAL 0)
         list(GET _dl_status 1 _dl_msg)
         message(FATAL_ERROR
-            "Failed to download WebRTC SDK from ${WEBRTC_RELEASE_URL}: ${_dl_msg}")
+            "Failed to download ${FETCH_URL}: ${_dl_msg}")
     endif()
 
-    # webrtc.7z 顶层目录为 webrtc/，解压到源码根目录
-    file(ARCHIVE_EXTRACT INPUT "${_archive}"
-        DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}")
+    file(MAKE_DIRECTORY "${FETCH_DEST}")
+    file(ARCHIVE_EXTRACT INPUT "${_archive}" DESTINATION "${FETCH_DEST}")
     file(REMOVE "${_archive}")
 
-    if(NOT EXISTS "${WEBRTC_INCLUDE}/api/peer_connection_interface.h"
-       OR NOT EXISTS "${WEBRTC_LIB_DEBUG_DIR}/webrtc.lib"
-       OR NOT EXISTS "${WEBRTC_LIB_RELEASE_DIR}/webrtc.lib")
+    if(FETCH_MARKER AND NOT EXISTS "${FETCH_MARKER}")
         message(FATAL_ERROR
-            "Downloaded archive did not produce expected layout under ${WEBRTC_ROOT}. "
-            "Expect webrtc/include, webrtc/lib_debug/webrtc.lib, "
-            "webrtc/lib_release/webrtc.lib inside the .7z.")
+            "Archive extracted to ${FETCH_DEST} but missing ${FETCH_MARKER}")
     endif()
-    message(STATUS "WebRTC SDK ready: ${WEBRTC_ROOT}")
+endfunction()
+
+# WebRTC 预编译 SDK：include.7z + debug/release .lib 三个独立压缩包
+set(WEBRTC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/webrtc" CACHE PATH
+    "WebRTC SDK root (expect include/ + lib_debug/ and/or lib_release/)")
+set(WEBRTC_LIB_BASE_URL
+    "https://github.com/wang-y-cell/xrtc/releases/download/v1.0.0"
+    CACHE STRING "GitHub Release base URL for WebRTC archives")
+set(WEBRTC_INCLUDE_URL
+    "${WEBRTC_LIB_BASE_URL}/webrtc_include.7z"
+    CACHE STRING "WebRTC headers 7z")
+set(WEBRTC_LIB_DEBUG_URL
+    "${WEBRTC_LIB_BASE_URL}/webrtc_win_msvc2022_x64_debug.7z"
+    CACHE STRING "Debug webrtc.lib 7z")
+set(WEBRTC_LIB_RELEASE_URL
+    "${WEBRTC_LIB_BASE_URL}/webrtc_win_msvc2022_x64_release.7z"
+    CACHE STRING "Release webrtc.lib 7z")
+set(WEBRTC_INCLUDE "${WEBRTC_ROOT}/include")
+set(WEBRTC_LIB_DEBUG_DIR "${WEBRTC_ROOT}/lib_debug")
+set(WEBRTC_LIB_RELEASE_DIR "${WEBRTC_ROOT}/lib_release")
+
+function(xrtc_find_webrtc_header out_var search_root)
+    foreach(_hdr
+        "${search_root}/api/peer_connection_interface.h"
+        "${search_root}/include/api/peer_connection_interface.h"
+        "${search_root}/webrtc/include/api/peer_connection_interface.h")
+        if(EXISTS "${_hdr}")
+            set(${out_var} "${_hdr}" PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+    file(GLOB_RECURSE _hits
+        "${search_root}/*/api/peer_connection_interface.h")
+    if(_hits)
+        list(GET _hits 0 _first)
+        set(${out_var} "${_first}" PARENT_SCOPE)
+        return()
+    endif()
+    set(${out_var} "" PARENT_SCOPE)
+endfunction()
+
+function(xrtc_ensure_webrtc_include)
+    set(_marker "${WEBRTC_INCLUDE}/api/peer_connection_interface.h")
+    if(EXISTS "${_marker}")
+        return()
+    endif()
+
+    set(_extract "${CMAKE_BINARY_DIR}/_xrtc_webrtc_extract/webrtc_include.7z")
+    file(REMOVE_RECURSE "${_extract}")
+    xrtc_fetch_archive(
+        URL "${WEBRTC_INCLUDE_URL}"
+        ARCHIVE "webrtc_include.7z"
+        DEST "${_extract}")
+
+    xrtc_find_webrtc_header(_hdr "${_extract}")
+    if(NOT _hdr)
+        message(FATAL_ERROR
+            "webrtc_include.7z 中没有 api/peer_connection_interface.h")
+    endif()
+
+    # _hdr = .../include/api/peer_connection_interface.h → 拷贝 include 目录
+    get_filename_component(_api_dir "${_hdr}" DIRECTORY)
+    get_filename_component(_include_dir "${_api_dir}" DIRECTORY)
+    file(MAKE_DIRECTORY "${WEBRTC_ROOT}")
+    if(NOT _include_dir STREQUAL "${WEBRTC_INCLUDE}")
+        file(COPY "${_include_dir}/" DESTINATION "${WEBRTC_INCLUDE}")
+    endif()
+    file(REMOVE_RECURSE "${_extract}")
+    message(STATUS "WebRTC include ready: ${WEBRTC_INCLUDE}")
+endfunction()
+
+# 把压缩包里的 webrtc.lib 放到 dest_dir
+function(xrtc_ensure_webrtc_lib url archive dest_dir)
+    set(_lib "${dest_dir}/webrtc.lib")
+    if(EXISTS "${_lib}")
+        return()
+    endif()
+
+    set(_extract "${CMAKE_BINARY_DIR}/_xrtc_webrtc_extract/${archive}")
+    file(REMOVE_RECURSE "${_extract}")
+    xrtc_fetch_archive(
+        URL "${url}"
+        ARCHIVE "${archive}"
+        DEST "${_extract}")
+
+    set(_picked "")
+    if(EXISTS "${_extract}/webrtc.lib")
+        set(_picked "${_extract}/webrtc.lib")
+    else()
+        file(GLOB_RECURSE _libs "${_extract}/*.lib")
+        foreach(_f IN LISTS _libs)
+            get_filename_component(_n "${_f}" NAME)
+            if(_n STREQUAL "webrtc.lib")
+                set(_picked "${_f}")
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(NOT _picked)
+        message(FATAL_ERROR
+            "${archive} 中没有 webrtc.lib（来源: ${url}）")
+    endif()
+
+    file(MAKE_DIRECTORY "${dest_dir}")
+    file(COPY "${_picked}" DESTINATION "${dest_dir}")
+    file(REMOVE_RECURSE "${_extract}")
+    message(STATUS "WebRTC lib ready: ${_lib}")
+endfunction()
+
+function(xrtc_ensure_webrtc_sdk)
+    xrtc_ensure_webrtc_include()
+
+    set(_need_debug OFF)
+    set(_need_release OFF)
+    if(CMAKE_CONFIGURATION_TYPES)
+        set(_need_debug ON)
+        set(_need_release ON)
+    elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(_need_debug ON)
+    else()
+        set(_need_release ON)
+    endif()
+
+    if(_need_debug)
+        xrtc_ensure_webrtc_lib(
+            "${WEBRTC_LIB_DEBUG_URL}"
+            "webrtc_win_msvc2022_x64_debug.7z"
+            "${WEBRTC_LIB_DEBUG_DIR}")
+    endif()
+    if(_need_release)
+        xrtc_ensure_webrtc_lib(
+            "${WEBRTC_LIB_RELEASE_URL}"
+            "webrtc_win_msvc2022_x64_release.7z"
+            "${WEBRTC_LIB_RELEASE_DIR}")
+    endif()
+
+    if(NOT EXISTS "${WEBRTC_INCLUDE}/api/peer_connection_interface.h")
+        message(FATAL_ERROR
+            "WebRTC 头文件缺失: ${WEBRTC_INCLUDE}/api/peer_connection_interface.h")
+    endif()
+    if(_need_debug AND NOT EXISTS "${WEBRTC_LIB_DEBUG_DIR}/webrtc.lib")
+        message(FATAL_ERROR "缺少 ${WEBRTC_LIB_DEBUG_DIR}/webrtc.lib")
+    endif()
+    if(_need_release AND NOT EXISTS "${WEBRTC_LIB_RELEASE_DIR}/webrtc.lib")
+        message(FATAL_ERROR "缺少 ${WEBRTC_LIB_RELEASE_DIR}/webrtc.lib")
+    endif()
 endfunction()
 
 xrtc_ensure_webrtc_sdk()
+
 
 # 按配置选择 Debug(/MDd) 或 Release(/MD) 的 webrtc.lib
 add_library(webrtc STATIC IMPORTED GLOBAL)
@@ -87,19 +229,62 @@ endif()
 get_target_property(_webrtc_lib webrtc IMPORTED_LOCATION)
 message(STATUS "WebRTC lib (${CMAKE_BUILD_TYPE}): ${_webrtc_lib}")
 
-# ---------- third_party: nlohmann/json (header-only) ----------
-add_library(nlohmann_json INTERFACE)
-target_include_directories(nlohmann_json INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/json/single_include)
+# ---------- nlohmann/json（Release include.zip，header-only）----------
+set(NLOHMANN_JSON_URL
+    "https://github.com/nlohmann/json/releases/download/v3.12.0/include.zip"
+    CACHE STRING "GitHub Release URL for nlohmann/json include.zip")
+set(NLOHMANN_JSON_ROOT "${XRTC_THIRD_PARTY}/json" CACHE PATH
+    "nlohmann/json extract root")
 
-# ---------- third_party: spdlog ----------
+function(xrtc_ensure_nlohmann_json)
+    set(_markers
+        "${NLOHMANN_JSON_ROOT}/single_include/nlohmann/json.hpp"
+        "${NLOHMANN_JSON_ROOT}/include/nlohmann/json.hpp"
+        "${NLOHMANN_JSON_ROOT}/nlohmann/json.hpp")
+    foreach(_m IN LISTS _markers)
+        if(EXISTS "${_m}")
+            return()
+        endif()
+    endforeach()
+
+    xrtc_fetch_archive(
+        URL "${NLOHMANN_JSON_URL}"
+        ARCHIVE "nlohmann_json_include.zip"
+        DEST "${NLOHMANN_JSON_ROOT}"
+        MARKER "${NLOHMANN_JSON_ROOT}/include/nlohmann/json.hpp")
+endfunction()
+
+xrtc_ensure_nlohmann_json()
+
+set(_json_inc "")
+if(EXISTS "${NLOHMANN_JSON_ROOT}/single_include/nlohmann/json.hpp")
+    set(_json_inc "${NLOHMANN_JSON_ROOT}/single_include")
+elseif(EXISTS "${NLOHMANN_JSON_ROOT}/include/nlohmann/json.hpp")
+    set(_json_inc "${NLOHMANN_JSON_ROOT}/include")
+elseif(EXISTS "${NLOHMANN_JSON_ROOT}/nlohmann/json.hpp")
+    set(_json_inc "${NLOHMANN_JSON_ROOT}")
+else()
+    message(FATAL_ERROR
+        "nlohmann/json.hpp not found under ${NLOHMANN_JSON_ROOT}")
+endif()
+
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json INTERFACE "${_json_inc}")
+message(STATUS "nlohmann/json include: ${_json_inc}")
+
+# ---------- spdlog（git submodule）----------
+if(NOT EXISTS "${XRTC_THIRD_PARTY}/spdlog/include/spdlog/spdlog.h")
+    message(FATAL_ERROR
+        "spdlog submodule missing: ${XRTC_THIRD_PARTY}/spdlog\n"
+        "Run: git submodule update --init --recursive")
+endif()
 if(TARGET spdlog::spdlog)
     set(_XRTC_SPDLOG_LIB spdlog::spdlog)
     set(_XRTC_SPDLOG_DEF SPDLOG_COMPILED_LIB)
 else()
     add_library(spdlog_header INTERFACE)
     target_include_directories(spdlog_header INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog/include)
+        ${XRTC_THIRD_PARTY}/spdlog/include)
     set(_XRTC_SPDLOG_LIB spdlog_header)
 endif()
 
@@ -109,22 +294,64 @@ list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/utils")
 find_package(utils REQUIRED CONFIG)
 message(STATUS "utils found: ${utils_DIR}")
 
-# ---------- Boost (Beast/Asio header-only WebSocket) ----------
-# 路径由外部传入：cmake -DBoost_ROOT=... 或 python build.py --boost_path=...
-if(POLICY CMP0144)
-    cmake_policy(SET CMP0144 NEW)
+# ---------- Boost（Release 源码包，Beast/Asio 仅需头文件，不跑 b2）----------
+set(BOOST_RELEASE_URL
+    "https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-b2-nodocs.7z"
+    CACHE STRING "GitHub Release URL for Boost source archive")
+
+function(xrtc_locate_boost_inc out_var)
+    set(_roots)
+    if(Boost_ROOT)
+        list(APPEND _roots "${Boost_ROOT}" "${Boost_ROOT}/include")
+    endif()
+    list(APPEND _roots
+        "${XRTC_THIRD_PARTY}/boost-1.92.0"
+        "${XRTC_THIRD_PARTY}/boost_1_92_0"
+        "${XRTC_THIRD_PARTY}/boost")
+    file(GLOB _boost_ver_files
+        "${XRTC_THIRD_PARTY}/*/boost/version.hpp")
+    foreach(_f IN LISTS _boost_ver_files)
+        get_filename_component(_boost_dir "${_f}" DIRECTORY) # .../boost
+        get_filename_component(_root "${_boost_dir}" DIRECTORY)
+        list(APPEND _roots "${_root}")
+    endforeach()
+
+    foreach(_r IN LISTS _roots)
+        if(EXISTS "${_r}/boost/version.hpp")
+            set(${out_var} "${_r}" PARENT_SCOPE)
+            return()
+        endif()
+        if(EXISTS "${_r}/include/boost/version.hpp")
+            set(${out_var} "${_r}/include" PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+    set(${out_var} "" PARENT_SCOPE)
+endfunction()
+
+xrtc_locate_boost_inc(_boost_inc)
+if(NOT _boost_inc)
+    message(STATUS "Boost headers missing, downloading ${BOOST_RELEASE_URL}")
+    # 顶层目录可能是 boost-1.92.0 或 boost_1_92_0，解压后再定位
+    xrtc_fetch_archive(
+        URL "${BOOST_RELEASE_URL}"
+        ARCHIVE "boost-1.92.0-b2-nodocs.7z"
+        DEST "${XRTC_THIRD_PARTY}")
+    xrtc_locate_boost_inc(_boost_inc)
 endif()
-if(NOT Boost_ROOT)
+if(NOT _boost_inc)
     message(FATAL_ERROR
-        "必须指定 Boost_ROOT（Boost 安装前缀）。"
-        "示例: cmake -DBoost_ROOT=F:/wy/boost_install "
-        "或: python build.py --boost_path=F:/wy/boost_install")
+        "Boost headers not found after extract under ${XRTC_THIRD_PARTY}. "
+        "Need a directory containing boost/version.hpp. "
+        "You may pass -DBoost_ROOT=<path>.")
 endif()
-set(Boost_ROOT "${Boost_ROOT}" CACHE PATH "Boost install prefix")
-set(Boost_NO_SYSTEM_PATHS ON)
-list(APPEND CMAKE_PREFIX_PATH "${Boost_ROOT}")
-find_package(Boost 1.82 REQUIRED CONFIG)
-message(STATUS "Boost ${Boost_VERSION} found: ${Boost_DIR}")
+
+if(NOT TARGET Boost::headers)
+    add_library(Boost_headers INTERFACE)
+    add_library(Boost::headers ALIAS Boost_headers)
+    target_include_directories(Boost_headers INTERFACE "${_boost_inc}")
+endif()
+message(STATUS "Boost headers: ${_boost_inc}")
 
 # ---------- xrtc SDK（对外仅暴露 include/xrtc，第三方对链接方彻底隔离）----------
 # 公开头：include/xrtc/*.h（无 WebRTC / utils / json / spdlog / Boost）
@@ -182,22 +409,45 @@ target_compile_definitions(xrtc
         NOMINMAX
         WIN32_LEAN_AND_MEAN
         $<$<BOOL:${_XRTC_SPDLOG_DEF}>:${_XRTC_SPDLOG_DEF}>
-        # Beast/Asio 为 header-only，禁止 MSVC 自动链接 MinGW 版 Boost 二进制
+        # Beast/Asio 为 header-only，禁止 MSVC 自动链接 Boost 二进制
         BOOST_ALL_NO_LIB
 )
 
 if(MSVC)
-    target_compile_options(xrtc PRIVATE /utf-8 /bigobj)
+    message(STATUS "MSVC ${CMAKE_CXX_COMPILER_VERSION}: ${CMAKE_CXX_COMPILER}")
+    target_compile_options(xrtc PRIVATE /utf-8 /bigobj /wd4068)
     target_compile_definitions(xrtc PRIVATE _WIN32_WINNT=0x0A00)
 endif()
 
-# ---------- GoogleTest（third_party/googletest）----------
+# ---------- GoogleTest（submodule: third_party/google_test）----------
 option(BUILD_XRTC_TESTS "Build xrtc unit tests" ON)
 if(BUILD_XRTC_TESTS)
+    if(NOT EXISTS "${XRTC_THIRD_PARTY}/google_test/CMakeLists.txt")
+        message(FATAL_ERROR
+            "GoogleTest submodule missing: ${XRTC_THIRD_PARTY}/google_test\n"
+            "Run: git submodule update --init --recursive")
+    endif()
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    add_subdirectory(third_party/googletest EXCLUDE_FROM_ALL)
+    # googletest 1.8 仍是 cmake_minimum_required(2.8.8)，CMake 4 已拒绝 < 3.5
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING
+        "Allow googletest 1.8 cmake_minimum_required < 3.5")
+    set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
+    if(POLICY CMP0148)
+        cmake_policy(SET CMP0148 OLD)
+    endif()
+    set(_xrtc_warn_deprecated "${CMAKE_WARN_DEPRECATED}")
+    set(CMAKE_WARN_DEPRECATED OFF)
+    add_subdirectory(${XRTC_THIRD_PARTY}/google_test EXCLUDE_FROM_ALL)
+    set(CMAKE_WARN_DEPRECATED "${_xrtc_warn_deprecated}")
+    # googletest 1.8.x 只有 gtest / gtest_main，没有 GTest:: 命名空间
+    if(TARGET gtest_main AND NOT TARGET GTest::gtest_main)
+        add_library(GTest::gtest_main ALIAS gtest_main)
+    endif()
+    if(TARGET gtest AND NOT TARGET GTest::gtest)
+        add_library(GTest::gtest ALIAS gtest)
+    endif()
     # 与 webrtc/xrtc 一致：关闭 iterator debugging，避免 LNK2038
     if(TARGET gtest)
         target_compile_definitions(gtest PUBLIC
@@ -242,71 +492,14 @@ if(BUILD_XRTC_TESTS)
         BOOST_ALL_NO_LIB
     )
     if(MSVC)
-        target_compile_options(xrtc_tests PRIVATE /utf-8 /bigobj)
+        target_compile_options(xrtc_tests PRIVATE /utf-8 /bigobj /wd4068)
         target_compile_definitions(xrtc_tests PRIVATE _WIN32_WINNT=0x0A00)
     endif()
     gtest_discover_tests(xrtc_tests DISCOVERY_MODE PRE_TEST)
 endif()
 
-# ---------- Qt Demo（可选） ----------
+# ---------- Qt Demo（默认关闭；-DBUILD_XRTC_DEMO=ON 才编译） ----------
 option(BUILD_XRTC_DEMO "Build webrtc_test Qt demo" OFF)
-
 if(BUILD_XRTC_DEMO)
-# Qt 路径由外部传入：cmake -DQT6_ROOT=... 或 python build.py --demo --qt_lib=...
-if(NOT QT6_ROOT)
-    message(FATAL_ERROR
-        "BUILD_XRTC_DEMO=ON 时必须指定 QT6_ROOT。"
-        "示例: cmake -DQT6_ROOT=F:/Qt/6.8.3/msvc2022_64 "
-        "或: python build.py --demo --qt_lib=F:/Qt/6.8.3/msvc2022_64")
-endif()
-list(APPEND CMAKE_PREFIX_PATH "${QT6_ROOT}")
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets OpenGL OpenGLWidgets)
-message(STATUS "Qt6 ${Qt6_VERSION} for demo: ${QT6_ROOT}")
-
-qt_standard_project_setup()
-
-qt_add_executable(webrtc_test
-    #WIN32 
-    MACOSX_BUNDLE
-    demo/main.cpp
-    demo/widget.cpp
-    demo/widget.h
-    demo/widget.ui
-    demo/yuv_gl_widget.cpp
-    demo/yuv_gl_widget.h
-)
-
-target_link_libraries(webrtc_test
-    PRIVATE
-        xrtc
-        ${_XRTC_SPDLOG_LIB}
-        Qt::Core
-        Qt::Widgets
-        Qt::OpenGL
-        Qt::OpenGLWidgets
-)
-
-target_include_directories(webrtc_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/demo
-)
-
-if(MSVC)
-    target_compile_definitions(webrtc_test PRIVATE
-        _ITERATOR_DEBUG_LEVEL=0
-        _HAS_ITERATOR_DEBUGGING=0)
-endif()
-
-install(TARGETS webrtc_test
-    BUNDLE DESTINATION .
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
-
-qt_generate_deploy_app_script(
-    TARGET webrtc_test
-    OUTPUT_SCRIPT deploy_script
-    NO_UNSUPPORTED_PLATFORM_ERROR
-)
-install(SCRIPT ${deploy_script})
+    add_subdirectory(demo)
 endif()

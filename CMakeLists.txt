@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(webrtc_test LANGUAGES C CXX)
+project(xtrc LANGUAGES C CXX)
 
 if(POLICY CMP0144)
     cmake_policy(SET CMP0144 NEW)
@@ -28,32 +28,63 @@ endif()
 
 set(XRTC_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
+# 配置阶段自动 git submodule update（spdlog / google_test）
+function(xrtc_init_git_submodules)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.gitmodules")
+        return()
+    endif()
+    find_package(Git QUIET)
+    if(NOT GIT_FOUND)
+        message(WARNING
+            "未找到 Git，无法自动拉取 submodule。请先安装 Git 后重新配置，"
+            "或手动执行: git submodule update --init --recursive")
+        return()
+    endif()
+    message(STATUS "Updating git submodules...")
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" submodule update --init --recursive
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE _git_sub_rc)
+    if(NOT _git_sub_rc EQUAL 0)
+        message(FATAL_ERROR
+            "git submodule update failed (code ${_git_sub_rc}). "
+            "请确认 Git 能访问 GitHub（必要时为 git 配置代理），或手动执行:\n"
+            "  git submodule update --init --recursive")
+    endif()
+endfunction()
+xrtc_init_git_submodules()
+
 # 下载 GitHub Release 压缩包并解压到 dest（marker 已存在则跳过）
 function(xrtc_fetch_archive)
-    set(oneValueArgs URL ARCHIVE DEST MARKER)
+    # URL: 下载地址
+    # ARCHIVE: 压缩包名
+    # DEST: 解压目录
+    # MARKER: 标记文件,表示已经解过了
+    set(oneValueArgs URL ARCHIVE DEST MARKER) # 参数名
+    # 把实参拆成 FETCH_URL、FETCH_ARCHIVE、FETCH_DEST、FETCH_MARKER。中间两个 "" 表示没有开关参数、没有多值参数,${ARGN}表示传入的参数列表
     cmake_parse_arguments(FETCH "" "${oneValueArgs}" "" ${ARGN})
-    if(FETCH_MARKER AND EXISTS "${FETCH_MARKER}")
+    if(FETCH_MARKER AND EXISTS "${FETCH_MARKER}") # 如果标记文件存在,则跳过
         return()
     endif()
 
     message(STATUS "Downloading ${FETCH_URL}")
     set(_archive "${CMAKE_BINARY_DIR}/${FETCH_ARCHIVE}")
     file(DOWNLOAD "${FETCH_URL}" "${_archive}"
-        SHOW_PROGRESS
-        STATUS _dl_status
-        TLS_VERIFY ON
-        TIMEOUT 1800
-        INACTIVITY_TIMEOUT 120)
-    list(GET _dl_status 0 _dl_code)
+        SHOW_PROGRESS # 显示进度
+        STATUS _dl_status # 结果放入列表
+        TLS_VERIFY ON # 验证证书
+        TIMEOUT 1800 # 超时时间,秒
+        INACTIVITY_TIMEOUT 120) # 连续 120 秒没数据算失败
+    list(GET _dl_status 0 _dl_code) # 取出失败码
     if(NOT _dl_code EQUAL 0)
         list(GET _dl_status 1 _dl_msg)
         message(FATAL_ERROR
             "Failed to download ${FETCH_URL}: ${_dl_msg}")
     endif()
 
-    file(MAKE_DIRECTORY "${FETCH_DEST}")
-    file(ARCHIVE_EXTRACT INPUT "${_archive}" DESTINATION "${FETCH_DEST}")
-    file(REMOVE "${_archive}")
+    file(MAKE_DIRECTORY "${FETCH_DEST}") # 解压目录如果不存在就创建
+    file(ARCHIVE_EXTRACT INPUT "${_archive}" DESTINATION "${FETCH_DEST}") # 解压
+    file(REMOVE "${_archive}") # 删除压缩包
 
     if(FETCH_MARKER AND NOT EXISTS "${FETCH_MARKER}")
         message(FATAL_ERROR
@@ -107,7 +138,7 @@ function(xrtc_ensure_webrtc_include)
     endif()
 
     set(_extract "${CMAKE_BINARY_DIR}/_xrtc_webrtc_extract/webrtc_include.7z")
-    file(REMOVE_RECURSE "${_extract}")
+    file(REMOVE_RECURSE "${_extract}") # 如果存在这个目录就删除
     xrtc_fetch_archive(
         URL "${WEBRTC_INCLUDE_URL}"
         ARCHIVE "webrtc_include.7z"
@@ -248,10 +279,10 @@ function(xrtc_ensure_nlohmann_json)
     endforeach()
 
     xrtc_fetch_archive(
-        URL "${NLOHMANN_JSON_URL}"
-        ARCHIVE "nlohmann_json_include.zip"
-        DEST "${NLOHMANN_JSON_ROOT}"
-        MARKER "${NLOHMANN_JSON_ROOT}/include/nlohmann/json.hpp")
+        URL "${NLOHMANN_JSON_URL}" # 下载地址
+        ARCHIVE "nlohmann_json_include.zip" # 压缩包名
+        DEST "${NLOHMANN_JSON_ROOT}" # 解压目录
+        MARKER "${NLOHMANN_JSON_ROOT}/include/nlohmann/json.hpp") # 标记文件,表示已经解过了
 endfunction()
 
 xrtc_ensure_nlohmann_json()
@@ -499,7 +530,7 @@ if(BUILD_XRTC_TESTS)
 endif()
 
 # ---------- Qt Demo（默认关闭；-DBUILD_XRTC_DEMO=ON 才编译） ----------
-option(BUILD_XRTC_DEMO "Build webrtc_test Qt demo" OFF)
+option(BUILD_XRTC_DEMO "Build xrtc Qt demo" OFF)
 if(BUILD_XRTC_DEMO)
     add_subdirectory(demo)
 endif()

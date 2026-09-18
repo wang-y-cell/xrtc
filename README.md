@@ -1,144 +1,45 @@
-# xrtc / xrtc SDK
+# xrtc
 
-基于 WebRTC + Janus Gateway 的音视频通话 SDK，附带 Qt6 演示程序。
+基于 WebRTC + Janus 的音视频 SDK。Windows 上用 CMake 编译。
 
-## 目录结构
+## 编译
 
-```
-include/xrtc/          对外公开 API
-include/               内部头文件（PRIVATE，链接方不可见）
-src/                   SDK 实现（.cpp）
-demo/                  Qt6 演示程序（CMake 子目录，默认不编）
-third_party/
-  google_test/         git submodule
-  spdlog/              git submodule
-  json/                CMake 从 Release 下载 include.zip
-  boost-*/             CMake 从 Release 下载 Boost 源码包
-webrtc/                预编译 WebRTC SDK（CMake 分别下载 include / Debug / Release）
-  include/             webrtc_include.7z
-  lib_debug/           Debug webrtc.lib（/MDd）
-  lib_release/         Release webrtc.lib（/MD）
-```
+需要：
 
-## 前置依赖
+- **Visual Studio 2026**（18.8+，`cl` **19.51** / 工具集 **14.51**）。不要用 VS 2022 / Preview / MinGW
+- CMake ≥ 3.19、独立 **Ninja**（不要用 `depot_tools` 里的 ninja）
+- Demo 另需 Qt 6.8（目录名仍是 `msvc2022_64`）
+- Git（配置时会自动 `git submodule update --init --recursive` 拉取 spdlog / google_test）
 
-| 依赖 | 说明 |
-|------|------|
-| **MSVC 2022** | x64 工具链 |
-| **CMake ≥ 3.19** | 唯一构建入口（已不再使用 `build.py`） |
-| **Ninja** | 推荐生成器 |
-| **Git submodule** | `spdlog`、`google_test`：`git submodule update --init` |
-| **nlohmann/json 3.12.0** | 配置时下载 `include.zip`，header-only |
-| **Boost 1.92.0** | 配置时下载 `boost-1.92.0-b2-nodocs.7z`；Beast/Asio 只用头文件，不跑 b2 |
-| **WebRTC 预编译包** | 缺失时从 GitHub Release 自动下载 |
-| **Qt 6**（仅 Demo） | `-DBUILD_XRTC_DEMO=ON -DQT6_ROOT=...` |
-
-克隆后先拉子模块：
+用 `vswhere` 找 2026 的 `vcvars64.bat`（不要用 2022 那套）：
 
 ```powershell
-git submodule update --init --recursive
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vs = & $vswhere -latest -products * -version "[18.0,19.0)" `
+  -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+  -property installationPath
+$vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
 ```
 
-### 自动下载的 Release
-
-| 依赖 | 地址 |
-|------|------|
-| WebRTC 头文件 | https://github.com/wang-y-cell/xrtc/releases/download/v1.0.0/webrtc_include.7z |
-| WebRTC Debug `.lib` | https://github.com/wang-y-cell/xrtc/releases/download/v1.0.0/webrtc_win_msvc2022_x64_debug.7z |
-| WebRTC Release `.lib` | https://github.com/wang-y-cell/xrtc/releases/download/v1.0.0/webrtc_win_msvc2022_x64_release.7z |
-| nlohmann/json | https://github.com/nlohmann/json/releases/download/v3.12.0/include.zip |
-| Boost | https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-b2-nodocs.7z |
-
-本地已有对应头文件/库时，CMake **不会再下载**。已有 Boost 安装也可 `-DBoost_ROOT=...` 覆盖。
-
-Ninja 等单配置生成器会下载 `webrtc_include.7z` + 当前 `CMAKE_BUILD_TYPE` 对应的那一个 `.lib`；Visual Studio 多配置会两个库都下。解压后放到：
-
-```
-webrtc/include/
-webrtc/lib_debug/webrtc.lib
-webrtc/lib_release/webrtc.lib
-```
-
-CMake 会按 `CMAKE_BUILD_TYPE` 选择库。
-
-#### 必须使用 VPN / 代理（国内网络）
-
-访问 GitHub Releases 在国内常出现 `Connection was reset` / `HTTP response code said error`。  
-**自动下载前请先开 VPN**，并在当前 PowerShell 会话设置代理（端口按你本机 VPN 为准，常见 Clash 为 `7890`）：
+PowerShell 里不要 `& vcvars64.bat`，环境不会留下。在 **一条 cmd** 里加载工具链再配置、编译（路径按本机修改）：
 
 ```powershell
-$env:HTTPS_PROXY = "http://127.0.0.1:7890"
-$env:HTTP_PROXY  = "http://127.0.0.1:7890"
+Remove-Item -Recurse -Force build\Debug -ErrorAction SilentlyContinue
 
-# 可选：确认能连上（期望 302，而不是 reset / 404）
-curl.exe -I "https://github.com/wang-y-cell/xrtc/releases/download/v1.0.0/webrtc_win_msvc2022_x64_debug.7z"
+cmd /c "`"$vcvars`" && cmake -S . -B build/Debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_MAKE_PROGRAM=F:/ninja/ninja.exe -DBUILD_XRTC_DEMO=ON -DQT6_ROOT=F:/Qt/6.8.3/msvc2022_64 && cmake --build build/Debug --target webrtc_test"
 ```
 
-CMake 的 `file(DOWNLOAD)` 会读取 `HTTPS_PROXY` / `HTTP_PROXY`。
+配置日志里应出现 `MSVC 19.51` 和 `...\MSVC\14.51.xxxxx\...\cl.exe`。不要加 `-DCMAKE_C_COMPILER=cl`（未加载 vcvars 时会找不到编译器）。
 
-#### 代理仍失败时：手动安装
+- 默认不编 Demo：去掉 `-DBUILD_XRTC_DEMO=ON` 和 `-DQT6_ROOT`
+- Release：把 `Debug` 换成 `Release`，`-DCMAKE_BUILD_TYPE=Release`
+- json / Boost / WebRTC 预编译包、以及 git submodule（spdlog / google_test）在配置阶段自动处理；国内访问 GitHub 需先设 `$env:HTTPS_PROXY`，git 也需能连 GitHub（可设 `git config --global http.proxy`）
 
-1. 浏览器（同样走 VPN）打开对应 Release 页下载压缩包
-2. WebRTC：`webrtc_include.7z` 解压到 `webrtc/include/`，`.lib` 解压到对应目录：
+可执行文件：`build/Debug/webrtc_test.exe`。运行 Demo 前把 `QT6_ROOT/bin` 加入 PATH。
 
-```text
-<仓库根>/webrtc/include/                 # webrtc_include.7z
-<仓库根>/webrtc/lib_debug/webrtc.lib     # debug.7z
-<仓库根>/webrtc/lib_release/webrtc.lib   # release.7z
-```
+## 头文件
 
-json 解压到 `third_party/json/`（需能 `#include <nlohmann/json.hpp>`）。  
-Boost 解压到 `third_party/`（目录内需有 `boost/version.hpp`）。
-
-目录齐全后 CMake **不会再下载**，可直接编译。
-
-## 构建
-
-只使用 CMake。**Windows 必须用 MSVC 2022 x64**（`webrtc.lib` 与 Qt `msvc2022_64`），不要用 MinGW。
-
-PowerShell **不能**直接 `& vcvars64.bat`：bat 里设置的 PATH 不会留在当前会话，所以会看到初始化横幅，但 `where cl` 仍找不到。
-
-用 VS 自带的 PowerShell 脚本（你这台是 Preview）：
-
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\2022\Preview\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
-
-where.exe cl    # 应是 ...\MSVC\...\bin\Hostx64\x64\cl.exe
-where.exe ninja # 第一行不要是 depot_tools；可用 F:\ninja\ninja.exe
-```
-
-或开开始菜单里的 **x64 Native Tools Command Prompt for VS 2022 Preview**，在 cmd 里编译。
-
-**默认不编译 Demo**，只有显式打开 `BUILD_XRTC_DEMO` 才会进入 `demo/` 子目录。
-
-```powershell
-# 若之前用 MinGW 配过，先删构建目录
-Remove-Item -Recurse -Force build/Debug
-
-cmake -S . -B build/Debug -G Ninja `
-  -DCMAKE_BUILD_TYPE=Debug `
-  -DCMAKE_C_COMPILER=cl `
-  -DCMAKE_CXX_COMPILER=cl `
-  -DCMAKE_MAKE_PROGRAM=F:/ninja/ninja.exe `
-  -DBUILD_XRTC_DEMO=ON `
-  -DQT6_ROOT=F:/Qt/6.8.3/msvc2022_64
-
-cmake --build build/Debug --target webrtc_test
-```
-
-可执行文件：`build/Debug/webrtc_test.exe` 或 `build/Release/webrtc_test.exe`。
-
-运行 Demo 前把 `QT6_ROOT/bin` 加入 PATH，并启动 [Janus Gateway](https://janus.conf.meetecho.com/)。
-
-### 链接报 `__std_rotate` / LNK2019
-
-`webrtc.lib` 引用了较新 MSVC STL 的向量化辅助函数。最终链接用的工具集必须 **≥ 编 webrtc.lib 的那套**。  
-VS 2022 Preview `17.14.0-pre.1.1`（MSVC 14.44.34823）的 `msvcprtd.lib` 里没有这些符号。
-
-处理：Visual Studio Installer 把 Preview **更新到最新**，或安装带更新工具集的 VS；更新后删掉 `build/Debug` 再配置。  
-C4068（未知杂注 clang）来自 WebRTC 头文件，可忽略。
-
-## 对外 API
+对外只需：
 
 ```cpp
 #include <xrtc/ixrtc_engine.h>
@@ -146,4 +47,25 @@ C4068（未知杂注 clang）来自 WebRTC 头文件，可忽略。
 #include <xrtc/xrtc_defines.h>
 ```
 
-WebRTC、Boost、spdlog、utils 等第三方依赖已对链接方隔离（PRIVATE）。
+头文件在仓库 `include/xrtc/`。链接 `xrtc` 静态库即可，WebRTC / Boost / json / spdlog 对使用方隔离。
+
+## 在其他工程里链接本库
+
+本仓库提供静态库目标 `xrtc`，**没有** `find_package(xrtc)`，请用 `add_subdirectory` 把本仓库嵌进对方工程。对方同样必须用 **VS 2026（cl 19.51+）**、x64、`/MD` 或 `/MDd`。
+
+把本仓库放进对方工程后，在对方 `CMakeLists.txt` 里：
+
+```cmake
+set(BUILD_XRTC_DEMO OFF CACHE BOOL "" FORCE)
+set(BUILD_XRTC_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(path/to/webrtc_test)   # 换成本仓库路径
+
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE xrtc)
+```
+
+C++ 只包含上一节三个头文件。链接 `xrtc` 会带上 `webrtc.lib`、`utils` 以及 `_ITERATOR_DEBUG_LEVEL=0`。
+
+对方 **不必** 传 `-DQT6_ROOT`、`-DCMAKE_MAKE_PROGRAM`；生成器和 Ninja 用他们自己工程的。第一次配置仍会自动拉取 submodule，并下载 WebRTC / json / Boost。有现成 Boost 时可加 `-DBoost_ROOT=`。
+
+配置、编译仍要在 **2026 的 vcvars** 环境里进行（与「编译」一节相同）。

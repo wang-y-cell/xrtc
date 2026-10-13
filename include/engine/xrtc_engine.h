@@ -23,6 +23,8 @@ public:
     Rest<> set_playout_device(const std::string& device_id) override;
     Rest<> set_audio_device(const std::string& device_id) override;
     Rest<> set_video_device(const std::string& device_id) override;
+    /// 枚举显示器，见 IXRtcEngine::get_screen_info
+    std::vector<XRTCScreenInfo> get_screen_info() override;
 
     std::vector<XRTCVideoFormat> get_video_capabilities(
         const std::string& device_id) override;
@@ -39,6 +41,8 @@ public:
     IXRtcMediaSource* create_video_source(
         const ixrtc_video_config& video_config) override;
     void destroy_video_source(IXRtcMediaSource* video_source) override;
+    /// 创建屏幕预览源。screen_id 为空用主屏，释放用 destroy_video_source
+    IXRtcMediaSource* create_screen_source(const std::string& screen_id) override;
 
     IXRtcMediaSource* create_audio_source(
         const ixrtc_audio_config& audio_config) override;
@@ -51,6 +55,10 @@ public:
 
     Rest<> start_local_video() override;
     Rest<> stop_local_video() override;
+    /// 会议内共享屏幕并取消视频静音。会停掉正在进行的摄像头采集
+    Rest<> start_local_screen(const std::string& screen_id) override;
+    /// 停止屏幕采集。若当前推的是屏幕，同时静音视频轨
+    Rest<> stop_local_screen() override;
     Rest<> start_local_audio() override;
     Rest<> stop_local_audio() override;
 

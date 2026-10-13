@@ -394,6 +394,8 @@ add_library(xrtc STATIC
     src/media/video_track_source.cpp
     src/media/remote_video_sink.cpp
     src/media/vcm_capture.cpp
+    src/media/screen_capture.cpp
+    src/platform/screen_grabber.cpp
     src/media/audio_capture.cpp
     src/media/xrtc_audio_device_module.cpp
     src/media/video_capability_selector.cpp
@@ -421,6 +423,12 @@ target_link_libraries(xrtc
         Boost::headers
         ws2_32
         winmm
+        d3d11
+        dxgi
+        gdi32
+        user32
+        dwmapi
+        shcore
         strmiids
         msdmo
         dmoguids
@@ -437,6 +445,8 @@ target_compile_definitions(xrtc
         _HAS_ITERATOR_DEBUGGING=0
     PRIVATE
         WEBRTC_WIN
+        # 与 webrtc.lib 一致，否则 DesktopCaptureOptions 大小不同，采集返回时栈被写坏
+        RTC_ENABLE_WIN_WGC
         NOMINMAX
         WIN32_LEAN_AND_MEAN
         $<$<BOOL:${_XRTC_SPDLOG_DEF}>:${_XRTC_SPDLOG_DEF}>

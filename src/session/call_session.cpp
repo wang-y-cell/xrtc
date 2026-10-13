@@ -514,6 +514,11 @@ void CallSession::cleanupMediaResources() {
         video_source_ = nullptr;
         local_video_capturing_ = false;
         local_audio_capturing_ = false;
+        screen_active_ = false;
+        if (screen_) {
+            screen_->stop();
+            screen_.reset();
+        }
         if (audio_capture_) {
             audio_capture_->stop();
             audio_capture_.reset();
@@ -609,8 +614,12 @@ void CallSession::MuteVideo(bool mute) {
             publisher_pc_->MuteVideo(mute);
         }
         // mute 时仍可能在采：关掉预览回调，推流由 track enable 控制
+        const bool preview = !mute && local_video_capturing_;
         if (capture_) {
-            capture_->set_local_preview_enabled(!mute && local_video_capturing_);
+            capture_->set_local_preview_enabled(preview && !screen_active_);
+        }
+        if (screen_) {
+            screen_->set_local_preview_enabled(preview && screen_active_);
         }
     };
     auto* api = XRtcGlobal::instance().api_thread();
@@ -635,20 +644,81 @@ void CallSession::muteLocalTracks(bool mute) {
     }
 }
 
+void CallSession::stopCameraCapture() {
+    if (capture_) {
+        capture_->set_local_preview_enabled(false);
+        (void)capture_->stop();
+    }
+}
+
+void CallSession::stopScreenCapture() {
+    if (screen_) {
+        screen_->set_local_preview_enabled(false);
+        (void)screen_->stop();
+    }
+    screen_active_ = false;
+}
+
+void CallSession::pushBlackLocalFrame(IXRtcMediaSource* source, int width,
+                                      int height) {
+    if (!video_source_ || width <= 0 || height <= 0) {
+        return;
+    }
+    width &= ~1;
+    height &= ~1;
+    if (width < 2) {
+        width = 2;
+    }
+    if (height < 2) {
+        height = 2;
+    }
+    auto buffer = webrtc::I420Buffer::Create(width, height);
+    webrtc::I420Buffer::SetBlack(buffer.get());
+    const webrtc::VideoFrame frame = webrtc::VideoFrame::Builder()
+                                         .set_video_frame_buffer(buffer)
+                                         .set_timestamp_rtp(0)
+                                         .set_timestamp_ms(webrtc::TimeMillis())
+                                         .build();
+    video_source_->PushFrame(frame);
+    if (auto* obs = XRtcGlobal::instance().observer()) {
+        obs->on_video_frame(source, MakeXRTCVideoFrame(buffer, frame));
+    }
+}
+
+void CallSession::applyVideoSendParams(bool for_screen, int width, int height,
+                                       int fps) {
+    if (publisher_pc_) {
+        publisher_pc_->ConfigureVideoSend(width, height, fps, for_screen);
+    }
+}
+
 Rest<> CallSession::StartLocalVideo() {
     auto run = [this]() -> Rest<> {
         if (!capture_) {
             spdlog::error("[session] StartLocalVideo: capture not ready");
             return xrtc_err(XRtcError::kVideoSourceNotInit);
         }
+        const bool screen_was_on = screen_active_;
+        stopScreenCapture();
         capture_->set_local_preview_enabled(true);
         auto st = capture_->start();
         if (!st) {
             spdlog::error("[session] StartLocalVideo: capture start failed: {}",
                           XRtcErrorToString(st.error()));
+            if (screen_was_on && screen_) {
+                screen_->set_local_preview_enabled(true);
+                if (screen_->start()) {
+                    screen_active_ = true;
+                    local_video_capturing_ = true;
+                }
+            }
             return st;
         }
         local_video_capturing_ = true;
+        const auto fmt = capture_->capture_format();
+        applyVideoSendParams(false, fmt.width > 0 ? fmt.width : config_.width,
+                             fmt.height > 0 ? fmt.height : config_.height,
+                             fmt.fps > 0 ? fmt.fps : config_.fps);
         spdlog::info("[session] local video capture started");
         return xrtc_ok();
     };
@@ -662,39 +732,126 @@ Rest<> CallSession::StartLocalVideo() {
 Rest<> CallSession::StopLocalVideo() {
     auto run = [this]() -> Rest<> {
         // 关采集前推一帧黑图，清本地预览并避免远端卡在最后一帧
-        if (video_source_) {
-            int w = config_.width > 0 ? config_.width : 640;
-            int h = config_.height > 0 ? config_.height : 480;
-            if (capture_) {
-                const auto fmt = capture_->capture_format();
-                if (fmt.width > 0) {
-                    w = fmt.width;
-                }
-                if (fmt.height > 0) {
-                    h = fmt.height;
-                }
+        int w = config_.width > 0 ? config_.width : 640;
+        int h = config_.height > 0 ? config_.height : 480;
+        IXRtcMediaSource* source = capture_.get();
+        if (screen_active_ && screen_) {
+            source = screen_.get();
+            const auto fmt = screen_->capture_format();
+            if (fmt.width > 0) {
+                w = fmt.width;
             }
-            auto buffer = webrtc::I420Buffer::Create(w, h);
-            webrtc::I420Buffer::SetBlack(buffer.get());
-            const webrtc::VideoFrame frame =
-                webrtc::VideoFrame::Builder()
-                    .set_video_frame_buffer(buffer)
-                    .set_timestamp_rtp(0)
-                    .set_timestamp_ms(webrtc::TimeMillis())
-                    .build();
-            video_source_->PushFrame(frame);
-
-            if (auto* obs = XRtcGlobal::instance().observer()) {
-                obs->on_video_frame(capture_.get(),
-                                    MakeXRTCVideoFrame(buffer, frame));
+            if (fmt.height > 0) {
+                h = fmt.height;
+            }
+        } else if (capture_) {
+            const auto fmt = capture_->capture_format();
+            if (fmt.width > 0) {
+                w = fmt.width;
+            }
+            if (fmt.height > 0) {
+                h = fmt.height;
             }
         }
-        if (capture_) {
-            capture_->set_local_preview_enabled(false);
-            (void)capture_->stop();
-        }
+        pushBlackLocalFrame(source, w, h);
+        stopScreenCapture();
+        stopCameraCapture();
         local_video_capturing_ = false;
         spdlog::info("[session] local video capture stopped");
+        return xrtc_ok();
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        return api->BlockingCall(run);
+    }
+    return run();
+}
+
+Rest<> CallSession::StartLocalScreen(const std::string& screen_id) {
+    auto run = [this, screen_id]() -> Rest<> {
+        if (!video_source_) {
+            spdlog::error("[session] StartLocalScreen: video source not ready");
+            return xrtc_err(XRtcError::kVideoSourceNotInit);
+        }
+        const bool camera_was_on = local_video_capturing_ && !screen_active_;
+        auto restore_camera = [&]() {
+            if (!camera_was_on || !capture_) {
+                if (!screen_active_) {
+                    local_video_capturing_ = false;
+                }
+                return;
+            }
+            capture_->set_local_preview_enabled(true);
+            if (capture_->start()) {
+                local_video_capturing_ = true;
+            } else {
+                local_video_capturing_ = false;
+            }
+        };
+        if (camera_was_on) {
+            stopCameraCapture();
+        }
+        if (!screen_) {
+            screen_ = ScreenCapture::Create(screen_id);
+            if (!screen_) {
+                spdlog::error("[session] StartLocalScreen: create failed id='{}'",
+                              screen_id);
+                restore_camera();
+                return xrtc_err(XRtcError::kMediaStartFailed);
+            }
+            screen_->set_track_source(video_source_);
+        } else if (!screen_id.empty() && screen_id != screen_->screen_id()) {
+            auto switched = screen_->device_switch(screen_id);
+            if (!switched) {
+                screen_active_ = false;
+                restore_camera();
+                return switched;
+            }
+        }
+        screen_active_ = false;
+        screen_->set_local_preview_enabled(true);
+        auto st = screen_->start();
+        if (!st) {
+            spdlog::error("[session] StartLocalScreen: start failed: {}",
+                          XRtcErrorToString(st.error()));
+            restore_camera();
+            return st;
+        }
+        screen_active_ = true;
+        local_video_capturing_ = true;
+        const auto fmt = screen_->capture_format();
+        applyVideoSendParams(true, fmt.width, fmt.height, fmt.fps);
+        spdlog::info("[session] screen capture started id={} {}x{}@{}",
+                     screen_->screen_id(), fmt.width, fmt.height, fmt.fps);
+        return xrtc_ok();
+    };
+    auto* api = XRtcGlobal::instance().api_thread();
+    if (api && webrtc::Thread::Current() != api) {
+        return api->BlockingCall(run);
+    }
+    return run();
+}
+
+Rest<> CallSession::StopLocalScreen() {
+    auto run = [this]() -> Rest<> {
+        if (!screen_active_) {
+            return xrtc_ok();
+        }
+        int w = 640;
+        int h = 480;
+        if (screen_) {
+            const auto fmt = screen_->capture_format();
+            if (fmt.width > 0) {
+                w = fmt.width;
+            }
+            if (fmt.height > 0) {
+                h = fmt.height;
+            }
+        }
+        pushBlackLocalFrame(screen_.get(), w, h);
+        stopScreenCapture();
+        local_video_capturing_ = false;
+        spdlog::info("[session] screen capture stopped");
         return xrtc_ok();
     };
     auto* api = XRtcGlobal::instance().api_thread();

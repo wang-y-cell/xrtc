@@ -60,6 +60,9 @@ public:
     /// 选择摄像头；会中有采集器则立即切换，否则记住供下次 StartLocalVideo / join
     virtual Rest<> set_video_device(const std::string& device_id) = 0;
 
+    /// 枚举显示器。screen_id 传给 start_local_screen / create_screen_source
+    virtual std::vector<XRTCScreenInfo> get_screen_info() = 0;
+
     /// 枚举摄像头支持的采集格式（可能含重复分辨率、不同 pixel format）
     virtual std::vector<XRTCVideoFormat> get_video_capabilities(
         const std::string& device_id) = 0;
@@ -81,6 +84,10 @@ public:
         const ixrtc_video_config& video_config) = 0;
     virtual void destroy_video_source(IXRtcMediaSource* video_source) = 0;
 
+    /// 创建屏幕采集源（预览）。screen_id 为空则用主屏。释放仍用 destroy_video_source
+    virtual IXRtcMediaSource* create_screen_source(
+        const std::string& screen_id) = 0;
+
     /// 创建本地音频采集源（WebRTC ADM + 旁路音量）；勿与 join 同时开同一 ADM
     virtual IXRtcMediaSource* create_audio_source(
         const ixrtc_audio_config& audio_config) = 0;
@@ -95,10 +102,14 @@ public:
     virtual void mute_audio(bool mute) = 0;
     virtual void mute_video(bool mute) = 0;
 
-    /// 会议内：开采集并开始推流；失败见 Rest<>（未在通话中或采集失败）
+    /// 会议内：开摄像头采集并开始推流；若正在共享屏幕则先停屏幕
     virtual Rest<> start_local_video() = 0;
-    /// 会议内：停推流并停采集
+    /// 会议内：停推流，并停摄像头与屏幕采集
     virtual Rest<> stop_local_video() = 0;
+    /// 会议内：共享屏幕并推流。screen_id 为空用主屏；会停掉摄像头采集
+    virtual Rest<> start_local_screen(const std::string& screen_id) = 0;
+    /// 会议内：停止屏幕采集。若当前推的是屏幕，同时停止视频推流
+    virtual Rest<> stop_local_screen() = 0;
     /// 会议内：开麦采集并开始推流；失败见 Rest<>
     virtual Rest<> start_local_audio() = 0;
     /// 会议内：停推流并停硬件录音

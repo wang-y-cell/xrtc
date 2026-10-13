@@ -3,6 +3,7 @@
 #include "rtc_base/thread.h"
 #include <engine/xrtc_global.h>
 #include <media/audio_capture.h>
+#include <media/screen_capture.h>
 #include <media/vcm_capture.h>
 #include <media/video_capability_selector.h>
 #include <media/xrtc_audio_device_module.h>
@@ -144,6 +145,10 @@ Rest<> XRtcEngine::set_video_device(const std::string& device_id) {
         });
 }
 
+std::vector<XRTCScreenInfo> XRtcEngine::get_screen_info() {
+    return ScreenCapture::get_screen_info();
+}
+
 std::vector<XRTCVideoFormat> XRtcEngine::get_video_capabilities(
     const std::string& device_id) {
     return XRtcGlobal::instance().api_thread()->BlockingCall(
@@ -211,6 +216,14 @@ void XRtcEngine::destroy_video_source(IXRtcMediaSource* video_source) {
     XRtcGlobal::instance().api_thread()->BlockingCall([video_source]() {
         delete video_source;
     });
+}
+
+IXRtcMediaSource* XRtcEngine::create_screen_source(const std::string& screen_id) {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [screen_id]() -> IXRtcMediaSource* {
+            auto capture = ScreenCapture::Create(screen_id);
+            return capture.release();
+        });
 }
 
 IXRtcMediaSource* XRtcEngine::create_audio_source(
@@ -350,6 +363,38 @@ Rest<> XRtcEngine::stop_local_video() {
         call_session_->StopLocalVideo();
         call_session_->MuteVideo(true);
         return xrtc_ok();
+    });
+}
+
+Rest<> XRtcEngine::start_local_screen(const std::string& screen_id) {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [this, screen_id]() -> Rest<> {
+            if (!call_session_ || !call_session_->active()) {
+                spdlog::warn("[engine] start_local_screen: not in call");
+                return xrtc_err(XRtcError::kNotInCall);
+            }
+            auto st = call_session_->StartLocalScreen(screen_id);
+            if (!st) {
+                spdlog::error("[engine] start_local_screen: {}",
+                              XRtcErrorToString(st.error()));
+                return st;
+            }
+            call_session_->MuteVideo(false);
+            return xrtc_ok();
+        });
+}
+
+Rest<> XRtcEngine::stop_local_screen() {
+    return XRtcGlobal::instance().api_thread()->BlockingCall([this]() -> Rest<> {
+        if (!call_session_) {
+            return xrtc_err(XRtcError::kNotInCall);
+        }
+        const bool was_screen = call_session_->local_screen_active();
+        auto st = call_session_->StopLocalScreen();
+        if (was_screen) {
+            call_session_->MuteVideo(true);
+        }
+        return st;
     });
 }
 

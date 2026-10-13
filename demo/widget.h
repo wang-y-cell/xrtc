@@ -91,6 +91,8 @@ private slots:
     void leave_meeting();
     void toggle_meeting_video();
     void toggle_meeting_audio();
+    /// 会议内共享主屏幕；与摄像头互斥
+    void toggle_meeting_screen();
     void on_video_request_changed();
 
 private:
@@ -103,6 +105,7 @@ private:
     xrtc::IXRtcMediaSource* audio_source = nullptr;
     bool in_meeting_ = false;
     bool meeting_video_on_ = false;
+    bool meeting_screen_on_ = false;
     bool meeting_audio_on_ = false;
 
     std::vector<xrtc::XRTCDeviceInfo> video_devices_;

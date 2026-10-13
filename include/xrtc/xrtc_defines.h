@@ -49,6 +49,15 @@ struct ixrtc_audio_config {
     std::string device_id;  /// 为空则用默认麦克风
 };
 
+/// 显示器信息（屏幕采集）
+struct XRTCScreenInfo {
+    std::string name;       /// 展示名，例如「主屏幕 1920x1080」
+    std::string screen_id;  /// 设备名，例如 \\.\DISPLAY1
+    int width = 0;
+    int height = 0;
+    bool primary = false;
+};
+
 ///ICE服务器信息,包括ICE服务器地址、ICE服务器用户名、ICE服务器密码
 struct XRTCIceServer {
     std::string uri;       /// 例如 stun:stun.l.google.com:19302

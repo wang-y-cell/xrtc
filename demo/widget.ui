@@ -235,6 +235,16 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="btn_meeting_screen">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>会议：共享屏幕</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="btn_meeting_audio">
        <property name="enabled">
         <bool>false</bool>

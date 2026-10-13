@@ -10,6 +10,7 @@
 #include <janus/janus_client.h>
 #include <media/remote_video_sink.h>
 #include <media/audio_capture.h>
+#include <media/screen_capture.h>
 #include <media/vcm_capture.h>
 #include <media/video_track_source.h>
 #include <pc/peer_connection.h>
@@ -49,9 +50,16 @@ public:
     ///@brief 静音视频（仅控制推流轨 enable，不管硬件采集）
     void MuteVideo(bool mute);
 
-    /// 仅开启/停止本地视频硬件采集（不含 mute）
+    /// 开摄像头采集（不含 mute）。若正在共享屏幕则先停屏幕，失败时尽量恢复屏幕
     Rest<> StartLocalVideo();
+    /// 停摄像头和屏幕采集，并推一帧黑图
     Rest<> StopLocalVideo();
+    /// 共享屏幕并推到同一条视频轨。screen_id 为空用主屏；会停掉摄像头
+    Rest<> StartLocalScreen(const std::string& screen_id);
+    /// 仅停止屏幕采集。未在共享时直接成功，不推黑图
+    Rest<> StopLocalScreen();
+    /// 当前推流源是屏幕（不是摄像头）
+    bool local_screen_active() const { return screen_active_; }
     /// 仅开启/停止本地音频硬件录音（不含 mute）
     Rest<> StartLocalAudio();
     Rest<> StopLocalAudio();
@@ -116,6 +124,14 @@ private:
                         bool retry);
     ///在 Janus 进房成功后，准备本地轨与采集器（默认不开采，由 StartLocal* 手动开）
     Rest<> ensureLocalMedia();
+    /// 停摄像头硬件采集，并把视频源标成结束
+    void stopCameraCapture();
+    /// 停屏幕采集线程。未创建屏幕采集器时为空操作
+    void stopScreenCapture();
+    /// 向本地轨和预览各推一帧黑图，避免停采集后画面停在最后一帧
+    void pushBlackLocalFrame(IXRtcMediaSource* source, int width, int height);
+    /// 按摄像头或屏幕更新发送端帧率上限与 content hint
+    void applyVideoSendParams(bool for_screen, int width, int height, int fps);
     /// 进房后默认禁推流，等待上层 start_local_*
     void muteLocalTracks(bool mute);
     ///设置peerconnectionHandler回调函数,创建peerconnectionHandler对象,调用init函数创建peerconnection对象,并将视频轨道和音频轨道加入进去
@@ -161,6 +177,8 @@ private:
     std::vector<utils::scoped_connection> janus_conns_;
 
     std::unique_ptr<VcmCapture> capture_;
+    std::unique_ptr<ScreenCapture> screen_;
+    bool screen_active_ = false;
     std::unique_ptr<AudioCapture> audio_capture_;
     /// 接收来自vcmCapture采集的帧，并通过VideoBroadcaster推送到WebRTC
     webrtc::scoped_refptr<XrtcVideoTrackSource> video_source_;

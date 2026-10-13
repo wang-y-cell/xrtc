@@ -278,12 +278,14 @@ Rest<> PeerConnectionHandler::AddTrack(
     return xrtc_ok();
 }
 
-void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps) {
+void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps,
+                                               bool for_screen) {
     if (!pc_) {
         return;
     }
     // 不设 max_bitrate_bps：交给 WebRTC 拥塞控制自适应，便于排查卡顿是否被硬上限卡住
-    const double max_fps = fps > 0 ? static_cast<double>(fps) : 30.0;
+    const double fallback_fps = for_screen ? 15.0 : 30.0;
+    const double max_fps = fps > 0 ? static_cast<double>(fps) : fallback_fps;
 
     for (const auto& sender : pc_->GetSenders()) {
         auto track = sender->track();
@@ -295,11 +297,13 @@ void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps) {
         auto* video =
             static_cast<webrtc::VideoTrackInterface*>(track.get());
         video->set_content_hint(
-            webrtc::VideoTrackInterface::ContentHint::kFluid);
+            for_screen ? webrtc::VideoTrackInterface::ContentHint::kDetailed
+                       : webrtc::VideoTrackInterface::ContentHint::kFluid);
 
         webrtc::RtpParameters params = sender->GetParameters();
         params.degradation_preference =
-            webrtc::DegradationPreference::BALANCED;
+            for_screen ? webrtc::DegradationPreference::MAINTAIN_RESOLUTION
+                       : webrtc::DegradationPreference::BALANCED;
         if (!params.encodings.empty()) {
             params.encodings[0].max_bitrate_bps.reset();
             params.encodings[0].max_framerate = max_fps;
@@ -310,8 +314,8 @@ void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps) {
                          label_, err.message());
         } else {
             spdlog::info(
-                "[pc:{}] ConfigureVideoSend {}x{}@{} max_bitrate=unlimited",
-                label_, width, height, static_cast<int>(max_fps));
+                "[pc:{}] ConfigureVideoSend {}x{}@{} screen={} max_bitrate=unlimited",
+                label_, width, height, static_cast<int>(max_fps), for_screen);
         }
         break;
     }

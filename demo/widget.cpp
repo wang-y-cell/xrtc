@@ -61,6 +61,7 @@ Widget::Widget(QWidget* parent)
     ui->video_capture->setStyleSheet(btnStart);
     ui->btn_audio_preview->setStyleSheet(btnStart);
     ui->btn_meeting_video->setStyleSheet(btnStart);
+    ui->btn_meeting_screen->setStyleSheet(btnStart);
     ui->btn_meeting_audio->setStyleSheet(btnStart);
     init_preview();
     init_connection();
@@ -156,6 +157,8 @@ void Widget::init_connection() {
     connect(ui->btn_leave, &QPushButton::clicked, this, &Widget::leave_meeting);
     connect(ui->btn_meeting_video, &QPushButton::clicked, this,
             &Widget::toggle_meeting_video);
+    connect(ui->btn_meeting_screen, &QPushButton::clicked, this,
+            &Widget::toggle_meeting_screen);
     connect(ui->btn_meeting_audio, &QPushButton::clicked, this,
             &Widget::toggle_meeting_audio);
     connect(ui->speaker_list, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -533,6 +536,7 @@ void Widget::leave_meeting() {
     clear_all_remote_views();
     in_meeting_ = false;
     meeting_video_on_ = false;
+    meeting_screen_on_ = false;
     meeting_audio_on_ = false;
     set_meeting_media_buttons(false);
     reset_meeting_media_button_labels();
@@ -544,12 +548,15 @@ void Widget::leave_meeting() {
 
 void Widget::set_meeting_media_buttons(bool in_meeting) {
     ui->btn_meeting_video->setEnabled(in_meeting);
+    ui->btn_meeting_screen->setEnabled(in_meeting);
     ui->btn_meeting_audio->setEnabled(in_meeting);
 }
 
 void Widget::reset_meeting_media_button_labels() {
     ui->btn_meeting_video->setStyleSheet(btnStart);
     ui->btn_meeting_video->setText(QString::fromUtf8("会议：开启摄像头"));
+    ui->btn_meeting_screen->setStyleSheet(btnStart);
+    ui->btn_meeting_screen->setText(QString::fromUtf8("会议：共享屏幕"));
     ui->btn_meeting_audio->setStyleSheet(btnStart);
     ui->btn_meeting_audio->setText(QString::fromUtf8("会议：开启麦克风"));
 }
@@ -564,8 +571,11 @@ void Widget::toggle_meeting_video() {
             return;
         }
         meeting_video_on_ = true;
+        meeting_screen_on_ = false;
         ui->btn_meeting_video->setStyleSheet(btnStop);
         ui->btn_meeting_video->setText(QString::fromUtf8("会议：关闭摄像头"));
+        ui->btn_meeting_screen->setStyleSheet(btnStart);
+        ui->btn_meeting_screen->setText(QString::fromUtf8("会议：共享屏幕"));
         ui->status_label->setText(QString::fromUtf8("状态: 摄像头已开"));
     } else {
         (void)engine->stop_local_video();
@@ -597,6 +607,43 @@ void Widget::toggle_meeting_audio() {
         ui->btn_meeting_audio->setText(QString::fromUtf8("会议：开启麦克风"));
         ui->mic_level_bar->setValue(0);
         ui->status_label->setText(QString::fromUtf8("状态: 麦克风已关"));
+    }
+}
+
+void Widget::toggle_meeting_screen() {
+    if (!in_meeting_ || !engine) {
+        return;
+    }
+    if (!meeting_screen_on_) {
+        std::string screen_id;
+        const auto screens = engine->get_screen_info();
+        for (const auto& screen : screens) {
+            if (screen.primary) {
+                screen_id = screen.screen_id;
+                break;
+            }
+        }
+        if (screen_id.empty() && !screens.empty()) {
+            screen_id = screens.front().screen_id;
+        }
+        if (!handle_rest(engine->start_local_screen(screen_id),
+                         QString::fromUtf8("状态: 屏幕共享失败: "))) {
+            return;
+        }
+        meeting_screen_on_ = true;
+        meeting_video_on_ = false;
+        ui->btn_meeting_screen->setStyleSheet(btnStop);
+        ui->btn_meeting_screen->setText(QString::fromUtf8("会议：停止共享"));
+        ui->btn_meeting_video->setStyleSheet(btnStart);
+        ui->btn_meeting_video->setText(QString::fromUtf8("会议：开启摄像头"));
+        ui->status_label->setText(QString::fromUtf8("状态: 正在共享屏幕"));
+    } else {
+        (void)engine->stop_local_screen();
+        meeting_screen_on_ = false;
+        clear_preview();
+        ui->btn_meeting_screen->setStyleSheet(btnStart);
+        ui->btn_meeting_screen->setText(QString::fromUtf8("会议：共享屏幕"));
+        ui->status_label->setText(QString::fromUtf8("状态: 屏幕共享已停"));
     }
 }
 
@@ -706,6 +753,7 @@ void Widget::on_join_result(xrtc::XRtcError error, const std::string& message) {
             if (error == xrtc::XRtcError::kNOERROR) {
                 in_meeting_ = true;
                 meeting_video_on_ = false;
+                meeting_screen_on_ = false;
                 meeting_audio_on_ = false;
                 ui->video_capture->setEnabled(false);
                 ui->btn_audio_preview->setEnabled(false);
@@ -717,6 +765,7 @@ void Widget::on_join_result(xrtc::XRtcError error, const std::string& message) {
             } else {
                 in_meeting_ = false;
                 meeting_video_on_ = false;
+                meeting_screen_on_ = false;
                 meeting_audio_on_ = false;
                 set_meeting_media_buttons(false);
                 reset_meeting_media_button_labels();
@@ -743,6 +792,7 @@ void Widget::on_leave(xrtc::XRtcError) {
         [this]() {
             in_meeting_ = false;
             meeting_video_on_ = false;
+            meeting_screen_on_ = false;
             meeting_audio_on_ = false;
             set_meeting_media_buttons(false);
             reset_meeting_media_button_labels();

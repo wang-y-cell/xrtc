@@ -288,7 +288,7 @@ void ScreenCapture::capture_loop() {
             if (preview) {
                 if (auto* observer = XRtcGlobal::instance().observer()) {
                     webrtc::scoped_refptr<webrtc::I420BufferInterface> view = buffer;
-                    constexpr int kMaxPreviewLongEdge = 640;
+                    constexpr int kMaxPreviewLongEdge = kXRtcLocalPreviewMaxLongEdge;
                     const int long_edge = std::max(view->width(), view->height());
                     if (long_edge > kMaxPreviewLongEdge) {
                         int pw = view->width();

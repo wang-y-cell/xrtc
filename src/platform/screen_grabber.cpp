@@ -40,16 +40,9 @@ void FitOutputSize(int src_w, int src_h, int* out_w, int* out_h) {
     *out_h = h;
 }
 
+/// 最近邻缩放：仅用于放大或尺寸相同的情况（放大时逐点复制即可）
 void ScaleBgraNearest(const uint8_t* src, int src_stride, int src_w, int src_h,
                       uint8_t* dst, int dst_w, int dst_h) {
-    if (src_w == dst_w && src_h == dst_h) {
-        for (int y = 0; y < src_h; ++y) {
-            std::memcpy(dst + static_cast<size_t>(y) * dst_w * 4,
-                        src + static_cast<size_t>(y) * src_stride,
-                        static_cast<size_t>(src_w) * 4);
-        }
-        return;
-    }
     for (int y = 0; y < dst_h; ++y) {
         const int sy = y * src_h / dst_h;
         const uint8_t* row = src + static_cast<size_t>(sy) * src_stride;
@@ -60,6 +53,66 @@ void ScaleBgraNearest(const uint8_t* src, int src_stride, int src_w, int src_h,
                         row + static_cast<size_t>(sx) * 4, 4);
         }
     }
+}
+
+/// 面积平均缩放：缩小画面时必须用它，最近邻会把文字/线条缩成锯齿，
+/// 上屏后看起来就是「糊 + 抖动」。每个目标像素取源像素覆盖块的平均值。
+void ScaleBgraBox(const uint8_t* src, int src_stride, int src_w, int src_h,
+                  uint8_t* dst, int dst_w, int dst_h) {
+    for (int y = 0; y < dst_h; ++y) {
+        const int sy0 = y * src_h / dst_h;
+        int sy1 = (y + 1) * src_h / dst_h;
+        if (sy1 <= sy0) {
+            sy1 = sy0 + 1;
+        }
+        uint8_t* out = dst + static_cast<size_t>(y) * dst_w * 4;
+        for (int x = 0; x < dst_w; ++x) {
+            const int sx0 = x * src_w / dst_w;
+            int sx1 = (x + 1) * src_w / dst_w;
+            if (sx1 <= sx0) {
+                sx1 = sx0 + 1;
+            }
+            int b = 0;
+            int g = 0;
+            int r = 0;
+            int a = 0;
+            int count = 0;
+            for (int sy = sy0; sy < sy1; ++sy) {
+                const uint8_t* row = src + static_cast<size_t>(sy) * src_stride;
+                for (int sx = sx0; sx < sx1; ++sx) {
+                    const uint8_t* p = row + static_cast<size_t>(sx) * 4;
+                    b += p[0];
+                    g += p[1];
+                    r += p[2];
+                    a += p[3];
+                    ++count;
+                }
+            }
+            uint8_t* q = out + static_cast<size_t>(x) * 4;
+            q[0] = static_cast<uint8_t>(b / count);
+            q[1] = static_cast<uint8_t>(g / count);
+            q[2] = static_cast<uint8_t>(r / count);
+            q[3] = static_cast<uint8_t>(a / count);
+        }
+    }
+}
+
+/// 缩小用面积平均，放大/同尺寸用最近邻
+void ScaleBgra(const uint8_t* src, int src_stride, int src_w, int src_h,
+               uint8_t* dst, int dst_w, int dst_h) {
+    if (src_w == dst_w && src_h == dst_h) {
+        for (int y = 0; y < src_h; ++y) {
+            std::memcpy(dst + static_cast<size_t>(y) * dst_w * 4,
+                        src + static_cast<size_t>(y) * src_stride,
+                        static_cast<size_t>(src_w) * 4);
+        }
+        return;
+    }
+    if (dst_w < src_w || dst_h < src_h) {
+        ScaleBgraBox(src, src_stride, src_w, src_h, dst, dst_w, dst_h);
+        return;
+    }
+    ScaleBgraNearest(src, src_stride, src_w, src_h, dst, dst_w, dst_h);
 }
 
 struct ListedScreen {
@@ -244,8 +297,8 @@ public:
             size_changed_ = true;
         }
         bgra_.resize(static_cast<size_t>(dst_w) * dst_h * 4);
-        ScaleBgraNearest(frame->data(), frame->stride(), src_w, src_h,
-                         bgra_.data(), dst_w, dst_h);
+        ScaleBgra(frame->data(), frame->stride(), src_w, src_h,
+                   bgra_.data(), dst_w, dst_h);
         width_ = dst_w;
         height_ = dst_h;
         origin_x_ = frame->top_left().x();

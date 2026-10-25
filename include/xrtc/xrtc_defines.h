@@ -49,6 +49,13 @@ struct ixrtc_audio_config {
     std::string device_id;  /// 为空则用默认麦克风
 };
 
+/// 本地预览（observer->on_video_frame 回调）的最大长边。
+///
+/// 说明：预览最初只为“本端小窗”设计，压到 640 足够；但会议客户端会把预览
+/// 当作主画面显示（屏幕共享时尤其明显），640 上屏会明显模糊。
+/// 默认与采集上限一致（1920），<=0 表示不缩放（原样回调采集分辨率）。
+constexpr int kXRtcLocalPreviewMaxLongEdge = 1920;
+
 /// 显示器信息（屏幕采集）
 struct XRTCScreenInfo {
     std::string name;       /// 展示名，例如「主屏幕 1920x1080」

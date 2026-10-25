@@ -750,10 +750,20 @@ void CallSession::pushBlackLocalFrame(IXRtcMediaSource* source, int width,
 }
 
 void CallSession::applyVideoSendParams(bool for_screen, int width, int height,
-                                       int fps) {
+                                       int fps, int max_bitrate_kbps) {
     if (publisher_pc_) {
-        publisher_pc_->ConfigureVideoSend(width, height, fps, for_screen);
+        publisher_pc_->ConfigureVideoSend(width, height, fps, for_screen,
+                                          max_bitrate_kbps);
     }
+}
+
+void CallSession::SetScreenShareConfig(const XRTCScreenShareConfig& config) {
+    screen_config_ = config;
+    spdlog::info(
+        "[session] screen share config: max_long_edge={} fps={} "
+        "max_bitrate_kbps={} remote_max_long_edge={}",
+        config.max_long_edge, config.fps, config.max_bitrate_kbps,
+        config.remote_max_long_edge);
 }
 
 Rest<> CallSession::StartLocalVideo() {
@@ -782,7 +792,7 @@ Rest<> CallSession::StartLocalVideo() {
         const auto fmt = capture_->capture_format();
         applyVideoSendParams(false, fmt.width > 0 ? fmt.width : config_.width,
                              fmt.height > 0 ? fmt.height : config_.height,
-                             fmt.fps > 0 ? fmt.fps : config_.fps);
+                             fmt.fps > 0 ? fmt.fps : config_.fps, 0);
         spdlog::info("[session] local video capture started");
         return xrtc_ok();
     };
@@ -855,8 +865,16 @@ Rest<> CallSession::StartLocalScreen(const std::string& screen_id) {
         if (camera_was_on) {
             stopCameraCapture();
         }
+        // 画质配置（分辨率上限/帧率）变了：重建采集器，否则沿用
+        const int want_fps = screen_config_.fps > 0 ? screen_config_.fps : 30;
+        const int want_edge = screen_config_.max_long_edge;
+        if (screen_ && (screen_->configured_fps() != want_fps ||
+                        screen_->configured_max_long_edge() != want_edge)) {
+            stopScreenCapture();
+            screen_.reset();
+        }
         if (!screen_) {
-            screen_ = ScreenCapture::Create(screen_id);
+            screen_ = ScreenCapture::Create(screen_id, want_edge, want_fps);
             if (!screen_) {
                 spdlog::error("[session] StartLocalScreen: create failed id='{}'",
                               screen_id);
@@ -884,7 +902,8 @@ Rest<> CallSession::StartLocalScreen(const std::string& screen_id) {
         screen_active_ = true;
         local_video_capturing_ = true;
         const auto fmt = screen_->capture_format();
-        applyVideoSendParams(true, fmt.width, fmt.height, fmt.fps);
+        applyVideoSendParams(true, fmt.width, fmt.height, fmt.fps,
+                             screen_config_.max_bitrate_kbps);
         spdlog::info("[session] screen capture started id={} {}x{}@{}",
                      screen_->screen_id(), fmt.width, fmt.height, fmt.fps);
         return xrtc_ok();
@@ -1296,19 +1315,25 @@ void CallSession::attachRemoteTrack(
 
     RemoteVideoAttachment att;
     att.track = video;
+    // remote_max_long_edge=0 表示不做 SDK 侧缩放，保留对端原始分辨率
+    const int render_cap = screen_config_.remote_max_long_edge;
     att.sink = std::make_unique<RemoteVideoSink>(
-        feed_id, [](uint64_t id, const XRTCVideoFrame& frame) {
+        feed_id, render_cap,
+        [](uint64_t id, const XRTCVideoFrame& frame) {
             if (auto* obs = XRtcGlobal::instance().observer()) {
                 obs->on_remote_video_frame(id, frame);
             }
         });
-    video->AddOrUpdateSink(att.sink.get(), [] {
+    video->AddOrUpdateSink(att.sink.get(), [render_cap] {
         webrtc::VideoSinkWants wants;
-        // 远端渲染限到约 720p，避免多路全分辨率解码+上传
-        wants.max_pixel_count = 1280 * 720;
-        wants.target_pixel_count = 960 * 540;
-        wants.max_framerate_fps = 30;
         wants.rotation_applied = true;
+        wants.max_framerate_fps = 30;
+        if (render_cap > 0) {
+            // 仅当显式限制时才给解码/渲染设上限；0 = 不限制
+            const int max_pixels = render_cap * render_cap;
+            wants.max_pixel_count = max_pixels;
+            wants.target_pixel_count = max_pixels / 2;
+        }
         return wants;
     }());
     remote_videos_[feed_id] = std::move(att);

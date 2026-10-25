@@ -69,6 +69,10 @@ public:
     /// 切换摄像头；更新 config，若采集器已创建则 device_switch
     Rest<> SwitchVideoDevice(const std::string& device_id);
 
+    /// 更新屏幕共享画质（采集参数下次 start_local_screen 生效；
+    /// 远端渲染上限对新订阅生效）
+    void SetScreenShareConfig(const XRTCScreenShareConfig& config);
+
     /// 本地摄像头硬件是否正在采集
     bool local_video_capturing() const { return local_video_capturing_; }
     /// 本地麦克风硬件是否正在录音
@@ -134,8 +138,9 @@ private:
     void stopScreenCapture();
     /// 向本地轨和预览各推一帧黑图，避免停采集后画面停在最后一帧
     void pushBlackLocalFrame(IXRtcMediaSource* source, int width, int height);
-    /// 按摄像头或屏幕更新发送端帧率上限与 content hint
-    void applyVideoSendParams(bool for_screen, int width, int height, int fps);
+    /// 按摄像头或屏幕更新发送端帧率上限、码率与 content hint
+    void applyVideoSendParams(bool for_screen, int width, int height, int fps,
+                              int max_bitrate_kbps);
     /// 进房后默认禁推流，等待上层 start_local_*
     void muteLocalTracks(bool mute);
     ///设置peerconnectionHandler回调函数,创建peerconnectionHandler对象,调用init函数创建peerconnection对象,并将视频轨道和音频轨道加入进去
@@ -165,6 +170,8 @@ private:
     void clearPendingRemoteIce(uint64_t handle_id);
 
     XRTCJoinConfig config_;
+    /// 屏幕共享画质：采集上限 / 帧率 / 码率 / 远端渲染上限
+    XRTCScreenShareConfig screen_config_;
     /// 进房/退房/失败世代与通知决策
     SessionLifecycle life_;
 

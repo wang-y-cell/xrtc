@@ -3,64 +3,16 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cstring>
 #include <utility>
 #include <vector>
 
 namespace xrtc {
 namespace {
 
+// 与 webrtc.lib 的 ABI 绑定：DesktopCaptureOptions 尺寸变化时编译期报错，
+// 避免静默的栈损坏（RTC_ENABLE_WIN_WGC 等编译宏必须与 SDK 一致）。
 static_assert(sizeof(webrtc::DesktopCaptureOptions) == 0x50,
               "DesktopCaptureOptions layout must match webrtc.lib");
-
-constexpr int kMaxLongEdge = 1920;
-
-void FitOutputSize(int src_w, int src_h, int* out_w, int* out_h) {
-    int w = src_w;
-    int h = src_h;
-    const int long_edge = std::max(w, h);
-    if (long_edge > kMaxLongEdge && long_edge > 0) {
-        if (w >= h) {
-            w = kMaxLongEdge;
-            h = std::max(2, src_h * kMaxLongEdge / src_w);
-        } else {
-            h = kMaxLongEdge;
-            w = std::max(2, src_w * kMaxLongEdge / src_h);
-        }
-    }
-    w &= ~1;
-    h &= ~1;
-    if (w < 2) {
-        w = 2;
-    }
-    if (h < 2) {
-        h = 2;
-    }
-    *out_w = w;
-    *out_h = h;
-}
-
-void ScaleBgraNearest(const uint8_t* src, int src_stride, int src_w, int src_h,
-                      uint8_t* dst, int dst_w, int dst_h) {
-    if (src_w == dst_w && src_h == dst_h) {
-        for (int y = 0; y < src_h; ++y) {
-            std::memcpy(dst + static_cast<size_t>(y) * dst_w * 4,
-                        src + static_cast<size_t>(y) * src_stride,
-                        static_cast<size_t>(src_w) * 4);
-        }
-        return;
-    }
-    for (int y = 0; y < dst_h; ++y) {
-        const int sy = y * src_h / dst_h;
-        const uint8_t* row = src + static_cast<size_t>(sy) * src_stride;
-        uint8_t* out = dst + static_cast<size_t>(y) * dst_w * 4;
-        for (int x = 0; x < dst_w; ++x) {
-            const int sx = x * src_w / dst_w;
-            std::memcpy(out + static_cast<size_t>(x) * 4,
-                        row + static_cast<size_t>(sx) * 4, 4);
-        }
-    }
-}
 
 struct ListedScreen {
     XRTCScreenInfo info;
@@ -111,7 +63,7 @@ public:
     WebrtcScreenGrabber() = default;
     ~WebrtcScreenGrabber() override { close(); }
 
-    bool open(const std::string& screen_id) override {
+    bool open(const std::string& screen_id, int max_fps) override {
         close();
         std::vector<ListedScreen> screens = EnumerateScreens();
         const auto found = std::find_if(
@@ -134,6 +86,8 @@ public:
             spdlog::error("[screen] CreateScreenCapturer failed");
             return false;
         }
+        // DesktopAndCursorComposer 会把系统光标合成进每一帧，
+        // 因此调用方不需要再自己画光标，也不需要整幅拷贝。
         capturer_ = std::make_unique<webrtc::DesktopAndCursorComposer>(
             std::move(raw), options);
         if (!capturer_->SelectSource(found->source_id)) {
@@ -142,13 +96,14 @@ public:
             return false;
         }
         capturer_->Start(this);
-        capturer_->SetMaxFrameRate(15);
+        max_fps_ = std::max(1, max_fps);
+        capturer_->SetMaxFrameRate(static_cast<uint32_t>(max_fps_));
 
         screen_id_ = screen_id;
         source_id_ = found->source_id;
-        FitOutputSize(found->info.width, found->info.height, &width_, &height_);
-        origin_x_ = 0;
-        origin_y_ = 0;
+        // 这里只记录源分辨率；缩放/转 I420 由 ScreenCapture 用 libyuv 完成
+        width_ = found->info.width;
+        height_ = found->info.height;
         const webrtc::DesktopRect rect =
             webrtc::GetScreenRect(source_id_, std::nullopt);
         if (!rect.is_empty()) {
@@ -157,18 +112,19 @@ public:
             origin_right_ = rect.right();
             origin_bottom_ = rect.bottom();
         }
-        spdlog::info("[screen] webrtc capturer opened id={} source={} {}x{}",
+        spdlog::info("[screen] webrtc capturer opened id={} source={} {}x{} fps={}",
                      screen_id_, static_cast<long long>(source_id_), width_,
-                     height_);
+                     height_, max_fps);
         return width_ > 0 && height_ > 0;
     }
 
     void close() override {
         capturer_.reset();
-        bgra_.clear();
-        have_frame_ = false;
+        last_frame_.reset();
         screen_id_.clear();
         source_id_ = webrtc::kInvalidScreenId;
+        width_ = 0;
+        height_ = 0;
     }
 
     PollResult poll(int timeout_ms) override {
@@ -176,21 +132,20 @@ public:
         if (!capturer_) {
             return PollResult::kFailed;
         }
-        size_changed_ = false;
         got_frame_ = false;
         last_result_ = webrtc::DesktopCapturer::Result::ERROR_PERMANENT;
         capturer_->CaptureFrame();
+        // DXGI 采集器在 CaptureFrame() 内同步回调；WGC 若改成异步需另行处理
         if (last_result_ == webrtc::DesktopCapturer::Result::SUCCESS &&
             got_frame_) {
-            return size_changed_ ? PollResult::kRestarted
-                                 : PollResult::kNewFrame;
+            return PollResult::kNewFrame;
         }
         if (last_result_ == webrtc::DesktopCapturer::Result::ERROR_TEMPORARY) {
             return PollResult::kTimeout;
         }
         const std::string id = screen_id_;
         spdlog::warn("[screen] capture failed, reopening id={}", id);
-        if (id.empty() || !open(id)) {
+        if (id.empty() || !open(id, max_fps_)) {
             return PollResult::kFailed;
         }
         return PollResult::kRestarted;
@@ -198,17 +153,23 @@ public:
 
     ScreenDesktopFrame frame() const override {
         ScreenDesktopFrame out;
-        out.width = width_;
-        out.height = height_;
-        out.bgra = have_frame_ ? bgra_.data() : nullptr;
-        out.origin_x = origin_x_;
-        out.origin_y = origin_y_;
-        out.origin_right = origin_right_;
-        out.origin_bottom = origin_bottom_;
+        if (!last_frame_ || !last_frame_->data()) {
+            out.width = width_;
+            out.height = height_;
+            return out;
+        }
+        out.width = last_frame_->size().width();
+        out.height = last_frame_->size().height();
+        out.bgra = last_frame_->data();
+        const webrtc::DesktopVector top_left = last_frame_->top_left();
+        out.origin_x = top_left.x();
+        out.origin_y = top_left.y();
+        out.origin_right = out.origin_x + out.width;
+        out.origin_bottom = out.origin_y + out.height;
         return out;
     }
 
-    bool has_frame() const override { return have_frame_; }
+    bool has_frame() const override { return last_frame_ != nullptr; }
 
     bool consume_cursor_change() override { return false; }
 
@@ -216,6 +177,7 @@ public:
 
     void draw_cursor(uint8_t* bgra, int width, int height, int origin_x,
                      int origin_y, int origin_right, int origin_bottom) override {
+        // 光标已由 DesktopAndCursorComposer 合成，保留空实现兼容接口
         (void)bgra;
         (void)width;
         (void)height;
@@ -237,22 +199,10 @@ public:
         if (src_w <= 0 || src_h <= 0) {
             return;
         }
-        int dst_w = 0;
-        int dst_h = 0;
-        FitOutputSize(src_w, src_h, &dst_w, &dst_h);
-        if (have_frame_ && (dst_w != width_ || dst_h != height_)) {
-            size_changed_ = true;
-        }
-        bgra_.resize(static_cast<size_t>(dst_w) * dst_h * 4);
-        ScaleBgraNearest(frame->data(), frame->stride(), src_w, src_h,
-                         bgra_.data(), dst_w, dst_h);
-        width_ = dst_w;
-        height_ = dst_h;
-        origin_x_ = frame->top_left().x();
-        origin_y_ = frame->top_left().y();
-        origin_right_ = origin_x_ + src_w;
-        origin_bottom_ = origin_y_ + src_h;
-        have_frame_ = true;
+        // 只持有这一帧，不做整幅拷贝/缩放：下一次 poll 之前指针有效
+        last_frame_ = std::move(frame);
+        width_ = src_w;
+        height_ = src_h;
         got_frame_ = true;
     }
 
@@ -260,16 +210,16 @@ private:
     std::unique_ptr<webrtc::DesktopCapturer> capturer_;
     std::string screen_id_;
     webrtc::DesktopCapturer::SourceId source_id_ = webrtc::kInvalidScreenId;
-    std::vector<uint8_t> bgra_;
+    /// 最近一次成功采集的原始帧（BGRA，源分辨率）
+    std::unique_ptr<webrtc::DesktopFrame> last_frame_;
     int width_ = 0;
     int height_ = 0;
     int origin_x_ = 0;
     int origin_y_ = 0;
     int origin_right_ = 0;
     int origin_bottom_ = 0;
-    bool have_frame_ = false;
+    int max_fps_ = 30;
     bool got_frame_ = false;
-    bool size_changed_ = false;
     webrtc::DesktopCapturer::Result last_result_ =
         webrtc::DesktopCapturer::Result::ERROR_PERMANENT;
 };

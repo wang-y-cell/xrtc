@@ -26,6 +26,20 @@ std::string GetEnvString(const char* name) {
     return value ? std::string(value) : std::string();
 }
 
+/// 读取整型环境变量；不存在或非法时返回 fallback
+int GetEnvInt(const char* name, int fallback) {
+    const std::string value = GetEnvString(name);
+    if (value.empty()) {
+        return fallback;
+    }
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        spdlog::warn("[ui] 环境变量 {} 非法: {}", name, value);
+        return fallback;
+    }
+}
+
 /// 逗号分隔列表（会去掉每项两端空白）
 std::vector<std::string> SplitCommaSeparated(const std::string& text) {
     std::vector<std::string> out;
@@ -199,6 +213,24 @@ void Widget::on_video_request_changed() {
  */
 void Widget::init_connection() {
     ApplyEnvDefaults(ui);
+
+    // 屏幕共享画质：默认 2560 长边 / 30fps / 自动码率 / 远端不缩放。
+    // 都可用环境变量覆盖，避免重新编译。
+    xrtc::XRTCScreenShareConfig screen_cfg;
+    screen_cfg.max_long_edge =
+        GetEnvInt("XRTC_SCREEN_MAX_LONG_EDGE", screen_cfg.max_long_edge);
+    screen_cfg.fps = GetEnvInt("XRTC_SCREEN_FPS", screen_cfg.fps);
+    screen_cfg.max_bitrate_kbps =
+        GetEnvInt("XRTC_SCREEN_BITRATE_KBPS", screen_cfg.max_bitrate_kbps);
+    screen_cfg.remote_max_long_edge =
+        GetEnvInt("XRTC_REMOTE_MAX_LONG_EDGE", screen_cfg.remote_max_long_edge);
+    engine->set_screen_share_config(screen_cfg);
+    spdlog::info(
+        "[ui] screen share config: max_long_edge={} fps={} bitrate_kbps={} "
+        "remote_max_long_edge={}",
+        screen_cfg.max_long_edge, screen_cfg.fps,
+        screen_cfg.max_bitrate_kbps, screen_cfg.remote_max_long_edge);
+
     connect(ui->video_capture, &QPushButton::clicked, this,
             &Widget::start_video_source);
     connect(ui->btn_audio_preview, &QPushButton::clicked, this,

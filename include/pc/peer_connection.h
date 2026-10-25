@@ -51,10 +51,12 @@ public:
         webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
         const std::vector<std::string>& stream_ids);
 
-    /// 为视频 Sender 设置帧率上限与降级策略（AddTrack 视频后调用）
-    /// for_screen 为 true 时按屏幕内容：保分辨率、kDetailed
+    /// 为视频 Sender 设置帧率上限、码率上限与降级策略（AddTrack 视频后调用）
+    /// for_screen 为 true 时按屏幕内容：保分辨率、kDetailed，
+    /// max_bitrate_kbps<=0 时按 宽×高×fps 自动估算屏幕码率上限。
     void ConfigureVideoSend(int width, int height, int fps,
-                            bool for_screen = false);
+                            bool for_screen = false,
+                            int max_bitrate_kbps = 0);
 
     void CreateOffer();
     /// 若 SetRemote 尚未完成则延后到完成后再 CreateAnswer

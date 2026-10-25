@@ -87,6 +87,10 @@ C++ 只包含上一节三个头文件。链接 `xrtc` 会带上 `webrtc.lib`、`
 | `XRTC_CA_FILE` | WSS 的 CA 证书链（PEM）。为空时依次读 `SSL_CERT_FILE` / `CURL_CA_BUNDLE`，最后用 OpenSSL 默认路径 | `D:\certs\ca.pem` |
 | `XRTC_TLS_VERIFY` | `0` 关闭 WSS 证书校验（**仅限自签名联调**），默认开启 | `0` |
 | `XRTC_SIGNAL_TIMEOUT_MS` | 单个 Janus 请求超时（默认 10000ms） | `3000` |
+| `XRTC_SCREEN_MAX_LONG_EDGE` | 屏幕共享采集长边上限，`0`=不缩放（默认 2560） | `1920` / `3840` |
+| `XRTC_SCREEN_FPS` | 屏幕共享帧率（默认 30） | `15` / `30` |
+| `XRTC_SCREEN_BITRATE_KBPS` | 屏幕共享发送码率上限 kbps，`0`=自动估算（默认） | `8000` |
+| `XRTC_REMOTE_MAX_LONG_EDGE` | 远端画面渲染长边上限，`0`=不缩放（默认，保留原始分辨率） | `1280` |
 
 PowerShell 示例：
 
@@ -113,6 +117,10 @@ F:\Qt\6.8.3\msvc2022_64\bin 加入 PATH 后运行 build\Debug\demo\webrtc_test.e
 - **请求超时**：create / attach / join / publish / 订阅 join 都有超时。
   会话级超时会整场失败（`on_join_result` / `on_leave` 收到 `kSignalingFailed`），
   单路订阅超时只重试该路（最多 3 次，退避 0.8s/1.6s/2.4s）。
+- **屏幕共享画质**：采集长边上限 2560、30fps、按需自动码率上限；
+  BGRA→I420 与缩放改用 libyuv（双线性），不再用最近邻。
+  远端默认**不再压到 960**，按对端原始分辨率渲染；需要省 CPU 时用
+  `XRTC_REMOTE_MAX_LONG_EDGE` 显式限制。
 
 ## 测试
 
@@ -130,4 +138,13 @@ $env:XRTC_WSS_SMOKE_URL = "wss://localhost:8989/janus"
 $env:XRTC_WS_SILENT_URL = "wss://localhost:8990/janus"
 $env:XRTC_CA_FILE       = "$PWD\build\test-certs\cert.pem"
 build\Debug\xrtc_tests.exe --gtest_filter=WebsocketTls.*:JanusSignaling.*
+```
+
+屏幕采集冒烟（需要真实桌面，验证推流分辨率/预览比例）：
+
+```powershell
+$env:XRTC_SCREEN_SMOKE = "1"
+$env:XRTC_SCREEN_TEST_EDGE = "2560"   # 0 = 不缩放；默认 1280
+build\Debug\xrtc_tests.exe --gtest_filter=ScreenCapture.*
+# 输出示例：[screen] smoke: edge=2560 push=2560x1440 frames=44 fps=21.8
 ```

@@ -80,6 +80,12 @@ public:
         const XRTCVideoCaptureRequest& request) = 0;
     virtual XRTCVideoCaptureRequest get_video_capture_request() const = 0;
 
+    /// 设置/读取屏幕共享画质（分辨率上限、帧率、码率、远端渲染上限）。
+    /// 采集类参数在下次 start_local_screen 生效；远端渲染上限对新订阅立即生效。
+    virtual void set_screen_share_config(
+        const XRTCScreenShareConfig& config) = 0;
+    virtual XRTCScreenShareConfig get_screen_share_config() const = 0;
+
     virtual IXRtcMediaSource* create_video_source(
         const ixrtc_video_config& video_config) = 0;
     virtual void destroy_video_source(IXRtcMediaSource* video_source) = 0;

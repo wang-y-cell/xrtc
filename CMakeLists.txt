@@ -532,6 +532,7 @@ if(BUILD_XRTC_TESTS)
         tests/subscribe_state_test.cpp
         tests/session_lifecycle_test.cpp
         tests/websocket_tls_test.cpp
+        tests/screen_capture_smoke.cpp
     )
     target_link_libraries(xrtc_tests
         PRIVATE

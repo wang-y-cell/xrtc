@@ -7,8 +7,11 @@
 
 namespace xrtc {
 
-RemoteVideoSink::RemoteVideoSink(uint64_t feed_id, FrameCallback cb)
-    : feed_id_(feed_id), callback_(std::move(cb)) {}
+RemoteVideoSink::RemoteVideoSink(uint64_t feed_id, int max_long_edge,
+                                 FrameCallback cb)
+    : feed_id_(feed_id),
+      max_long_edge_(max_long_edge <= 0 ? 0 : std::max(240, max_long_edge)),
+      callback_(std::move(cb)) {}
 
 void RemoteVideoSink::OnFrame(const webrtc::VideoFrame& frame) {
     if (!callback_) {
@@ -31,24 +34,26 @@ void RemoteVideoSink::OnFrame(const webrtc::VideoFrame& frame) {
         return;
     }
 
-    // 远端小窗预览：最长边压到 960，降低多路上传成本
-    constexpr int kMaxPreviewLongEdge = 960;
-    const int long_edge = std::max(width, height);
-    if (long_edge > kMaxPreviewLongEdge) {
-        int pw = width;
-        int ph = height;
-        if (width >= height) {
-            pw = kMaxPreviewLongEdge;
-            ph = std::max(2, height * kMaxPreviewLongEdge / width);
-        } else {
-            ph = kMaxPreviewLongEdge;
-            pw = std::max(2, width * kMaxPreviewLongEdge / height);
+    // 默认不缩放：远端按对端原始分辨率渲染（1080p/1440p 都保留）。
+    // 只有显式配置了 remote_max_long_edge 才降分辨率（多路时省 CPU）。
+    if (max_long_edge_ > 0) {
+        const int long_edge = std::max(width, height);
+        if (long_edge > max_long_edge_) {
+            int pw = width;
+            int ph = height;
+            if (width >= height) {
+                pw = max_long_edge_;
+                ph = std::max(2, height * max_long_edge_ / width);
+            } else {
+                ph = max_long_edge_;
+                pw = std::max(2, width * max_long_edge_ / height);
+            }
+            pw &= ~1;
+            ph &= ~1;
+            auto scaled = webrtc::I420Buffer::Create(pw, ph);
+            scaled->ScaleFrom(*buffer);
+            buffer = scaled;
         }
-        pw &= ~1;
-        ph &= ~1;
-        auto scaled = webrtc::I420Buffer::Create(pw, ph);
-        scaled->ScaleFrom(*buffer);
-        buffer = scaled;
     }
 
     XRTCVideoFrame out = MakeXRTCVideoFrame(std::move(buffer), frame);

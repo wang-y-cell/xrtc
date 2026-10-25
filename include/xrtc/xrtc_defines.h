@@ -88,6 +88,14 @@ struct XRTCJoinConfig {
     XRTCVideoSelectStrategy select_strategy =
         XRTCVideoSelectStrategy::kPreferRequested;
     std::vector<XRTCIceServer> ice_servers;  /// 为空则使用默认 STUN
+    /// 单个 Janus 请求（create/attach/join/publish）的超时时间，毫秒。
+    /// <=0 表示使用默认值 10000ms。超时后会话级请求整场失败，订阅级请求按路重试。
+    uint32_t signal_timeout_ms = 10000;
+    /// wss:// 使用的 CA 证书链文件（PEM）。为空时依次用环境变量
+    /// XRTC_CA_FILE / SSL_CERT_FILE / CURL_CA_BUNDLE，最后用 OpenSSL 默认路径。
+    std::string ca_file;
+    /// wss:// 是否校验证书。false 仅用于自签名证书联调，生产必须保持 true。
+    bool tls_verify = true;
 };
 
 /// SDK / Rest<> 统一错误码

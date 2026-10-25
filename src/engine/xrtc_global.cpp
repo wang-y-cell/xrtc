@@ -1,6 +1,8 @@
-﻿#include <engine/xrtc_global.h>
+#include <engine/xrtc_global.h>
 
 #include "api/audio/audio_device.h"
+#include "api/audio/audio_processing.h"
+#include "api/audio/builtin_audio_processing_builder.h"
 #include "api/audio/create_audio_device_module.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
@@ -45,6 +47,7 @@ XRtcGlobal::XRtcGlobal()
 XRtcGlobal::~XRtcGlobal() {
     api_thread_->BlockingCall([this]() {
         pc_factory_ = nullptr;
+        apm_ = nullptr;
         adm_ = nullptr;
         xrtc_adm_ = nullptr;
     });
@@ -110,6 +113,36 @@ XRtcGlobal::GetOrCreatePeerConnectionFactory() {
         adm_->Init();
     }
 
+    /*
+     * 音频处理（APM）：回声消除 / 降噪 / 自动增益 / 高通。
+     * 之前传 nullptr 等于不显式配置，强依赖 WebRTC 内部默认值，外放时回声明显。
+     * 这里显式构造 APM 并交给工厂：
+     * - AEC3：需要 ADM 收到 playout 参考信号，ADM 已通过工厂绑定，满足条件；
+     * - NS：kHigh，抑制键盘/风扇等稳态噪声；
+     * - AGC：kAdaptiveDigital（未做模拟音量耦合，不能用 kAdaptiveAnalog）；
+     * - 高通：滤掉 80Hz 以下的低频轰鸣。
+     */
+    if (!apm_) {
+        webrtc::AudioProcessing::Config apm_config;
+        apm_config.echo_canceller.enabled = true;
+        apm_config.noise_suppression.enabled = true;
+        apm_config.noise_suppression.level =
+            webrtc::AudioProcessing::Config::NoiseSuppression::kHigh;
+        apm_config.gain_controller1.enabled = true;
+        apm_config.gain_controller1.mode =
+            webrtc::AudioProcessing::Config::GainController1::kAdaptiveDigital;
+        apm_config.high_pass_filter.enabled = true;
+        apm_ = webrtc::BuiltinAudioProcessingBuilder(apm_config)
+                   .Build(webrtc::CreateEnvironment());
+        if (!apm_) {
+            spdlog::error("[global] create AudioProcessing failed");
+        } else {
+            spdlog::info(
+                "[global] AudioProcessing enabled: AEC=on NS=high AGC=digital "
+                "HPF=on");
+        }
+    }
+
     pc_factory_ = webrtc::CreatePeerConnectionFactory(
         network_thread_.get(), worker_thread_.get(), api_thread_.get(), adm_,
         webrtc::CreateBuiltinAudioEncoderFactory(),
@@ -126,7 +159,7 @@ XRtcGlobal::GetOrCreatePeerConnectionFactory() {
             webrtc::OpenH264DecoderTemplateAdapter,
             webrtc::Dav1dDecoderTemplateAdapter>>(),
         /*audio_mixer=*/nullptr,
-        /*audio_processing=*/nullptr);
+        /*audio_processing=*/apm_);
 
     if (!pc_factory_) {
         spdlog::error("CreatePeerConnectionFactory失败");

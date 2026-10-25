@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -415,6 +416,10 @@ public:
     /// handle_id + reason；订阅 ICE 失败时只应拆该 handle，不要当整场 error
     utils::signal<uint64_t, std::string> hangup{this};
     utils::signal<> destroyed{this};
+    /// 请求超时：feed_id==0 表示会话/发布者级（整场失败），
+    /// feed_id!=0 表示订阅某路超时（只重试该路，不拆整场）。
+    /// 第二个参数是给日志/错误信息用的说明。
+    utils::signal<uint64_t, std::string> request_timeout{this};
 
     //连接janus服务器,websocket完成,可以发送和接收数据
     Rest<> Connect(const XRTCJoinConfig& config);
@@ -439,10 +444,11 @@ public:
     void DetachSubscriber(uint64_t feed_id);
 
 	///把本地生成的 SDP answer 发给 Janus，正式开始拉该路流
-    void StartSubscriber(uint64_t handle_id, const JanusJsep& answer);
+    void StartSubscriber(uint64_t handle_id, uint64_t feed_id,
+                         const JanusJsep& answer);
 
 	///获取发布者句柄
-    uint64_t publisher_handle() const { return pub_handle_; }
+    uint64_t publisher_handle() const { return pub_handle_.load(); }
 
 private:
     using json = nlohmann::json;
@@ -455,6 +461,10 @@ private:
         kCreateRoom,
         kJoinPub,
         kAttachSub,
+        /// 发布 offer 已发出，等待 answer（用于超时记账）
+        kPublish,
+        /// 订阅者 join 已发出，等待带 offer 的 event（用于超时记账）
+        kSubJoin,
     };
 
     //绑定websocket的信号与槽
@@ -463,6 +473,40 @@ private:
     void send_json(const json& obj);
     //生成一个唯一的transaction字段的值
     std::string new_transaction();
+
+    // ---- 线程收口：所有公开方法都投递到本对象亲和线程执行 ----
+    /// 当前调用是否已在 JanusClient 的亲和线程上
+    bool on_janus_thread() const;
+    /// 在亲和线程同步执行（返回前完成）；亲和 loop 已停时安全地就地执行
+    void run_on_janus_thread_blocking(const std::function<void()>& fn);
+    /// 在亲和线程异步执行（保持投递顺序）；loop 不可用时安全地就地执行
+    void post_to_janus_thread(std::function<void()> fn);
+
+    // ---- 公开方法的实现体（只能在本对象亲和线程上调用）----
+    Rest<> do_connect(const XRTCJoinConfig& config);
+    void do_disconnect();
+    void do_publish(const JanusJsep& offer);
+    void do_send_trickle(uint64_t handle_id, const std::string& sdp_mid,
+                         int mline_index, const std::string& candidate);
+    void do_send_trickle_complete(uint64_t handle_id);
+    void do_subscribe(uint64_t feed_id);
+    void do_detach_subscriber(uint64_t feed_id);
+    void do_start_subscriber(uint64_t handle_id, uint64_t feed_id,
+                             const JanusJsep& answer);
+
+    // ---- 请求超时（janus 线程上的定时器）----
+    /// 给 transaction 挂超时；what 用于超时日志与错误文案
+    void arm_request_timeout(const std::string& tx, uint64_t feed_id,
+                             const std::string& what);
+    /// 收到响应后取消超时
+    void clear_request_timeout(const std::string& tx);
+    /// 请求已完成（含 event 形式完成）：取消超时并清掉 transaction 记账
+    void complete_tx(const std::string& tx);
+    /// 超时触发：清 transaction、按 feed 发 request_timeout
+    void on_request_timeout(std::string tx, uint64_t feed_id,
+                            std::string what);
+    /// 清掉所有超时定时器
+    void clear_all_request_timeouts();
 	///websocket握手成功之后调用,创建会话,开启之后的所有操作
     ///后面的操作基于on_ws_message槽函数中
     utils::slots_t<> on_ws_connected();
@@ -511,7 +555,8 @@ private:
     uint64_t session_id_ = 0;
     ///发布者句柄,发送attach 使用videoroom插件之后,janus发送响应中包含的id,将这个id赋值给这个句柄
 	///这是本地的发布者句柄,表示一个连接
-    uint64_t pub_handle_ = 0;
+    /// 会在 api 线程被读取（trickle/hangup 判定），故用原子
+    std::atomic<uint64_t> pub_handle_{0};
     /// 正在等待 create 房间的 event（created 或 427）
     bool create_room_pending_ = false;
     ///生成随机的transaction字段的值的序号,
@@ -525,6 +570,16 @@ private:
     /// 订阅去重 / feed→handle（含 pending attach）
     SubscribeState subscribe_state_;
     std::mutex map_mutex_;
+    /// 进行中的请求超时定时器：transaction -> event_loop timer id
+    std::unordered_map<std::string, utils::event_loop::timer_id> tx_timers_;
+    /// 进行中阶段请求的 transaction（用于在对应 event 到达时取消超时）
+    std::string create_room_tx_;
+    std::string join_tx_;
+    std::string publish_tx_;
+    /// feed_id -> 订阅者 join 的 transaction
+    std::unordered_map<uint64_t, std::string> sub_join_tx_;
+    /// 单个 Janus 请求的超时时间（毫秒），来自 XRTCJoinConfig::signal_timeout_ms
+    uint32_t request_timeout_ms_ = 10000;
 
     //保持心跳的线程
     std::thread keepalive_thread_;

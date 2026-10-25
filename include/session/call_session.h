@@ -117,11 +117,15 @@ private:
     slots_t<> onJanusHangup(uint64_t handle_id, const std::string& reason);
     /// 信令层错误：按是否已进房走 failJoin / failAfterJoined
     slots_t<> onJanusError(const std::string& err);
+    /// Janus 请求超时：feed==0 会话级失败；feed!=0 只重试该路订阅
+    slots_t<> onJanusRequestTimeout(uint64_t feed_id, const std::string& what);
     /// WebSocket/会话销毁（含安静断线）：走 SessionLifecycle 清理
     slots_t<> onJanusDestroyed();
     /// 订阅路失败：只拆该 PC，可选稍后重试 Subscribe（不拆整场）
     void dropSubscriber(uint64_t handle_id, const std::string& reason,
                         bool retry);
+    /// 按 feed 退避重试订阅；返回 false 表示已达最大次数，由调用方收尾
+    bool scheduleSubscribeRetry(uint64_t feed_id, const std::string& reason);
     ///在 Janus 进房成功后，准备本地轨与采集器（默认不开采，由 StartLocal* 手动开）
     Rest<> ensureLocalMedia();
     /// 停摄像头硬件采集，并把视频源标成结束
@@ -142,8 +146,8 @@ private:
     /// Publisher：本地 offer 就绪后 JanusClient::Publish
     void onPublisherLocalSdp(const std::string& type, const std::string& sdp);
     /// Subscriber：本地 answer 就绪后 JanusClient::StartSubscriber
-    void onSubscriberLocalSdp(uint64_t handle_id, const std::string& type,
-                              const std::string& sdp);
+    void onSubscriberLocalSdp(uint64_t handle_id, uint64_t feed_id,
+                              const std::string& type, const std::string& sdp);
     /// OnTrack：挂远端音/视频（视频加 RemoteVideoSink → UI 回调）
     void attachRemoteTrack(
         uint64_t feed_id,

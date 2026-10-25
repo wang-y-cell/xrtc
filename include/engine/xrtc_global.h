@@ -7,6 +7,7 @@
 namespace webrtc {
 class Thread;
 class AudioDeviceModule;
+class AudioProcessing;
 class PeerConnectionFactoryInterface;
 }  // namespace webrtc
 
@@ -48,6 +49,8 @@ private:
     XRtcEngineObserver* observer_ = nullptr;
     webrtc::scoped_refptr<XrtcAudioDeviceModule> xrtc_adm_;
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> adm_;
+    /// 音频处理链（AEC/NS/AGC/HPF），随工厂一起创建，进程内复用
+    webrtc::scoped_refptr<webrtc::AudioProcessing> apm_;
     webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> pc_factory_;
 };
 

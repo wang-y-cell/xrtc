@@ -1,4 +1,4 @@
-﻿#include "widget.h"
+#include "widget.h"
 #include "ui_widget.h"
 #include "yuv_gl_widget.h"
 
@@ -9,6 +9,9 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cstdlib>
+#include <string>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -16,6 +19,52 @@ namespace {
 // 按钮样式：停止时红色、启动时蓝色
 const QString btnStop = "background-color:#d84a38";
 const QString btnStart = "background-color:#007aac";
+
+/// 读取环境变量（不存在返回空串）。凭据/服务器地址一律由外部注入。
+std::string GetEnvString(const char* name) {
+    const char* value = std::getenv(name);
+    return value ? std::string(value) : std::string();
+}
+
+/// 逗号分隔列表（会去掉每项两端空白）
+std::vector<std::string> SplitCommaSeparated(const std::string& text) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t comma = text.find(',', start);
+        const size_t end = comma == std::string::npos ? text.size() : comma;
+        std::string item = text.substr(start, end - start);
+        const size_t first = item.find_first_not_of(" \t\r\n");
+        const size_t last = item.find_last_not_of(" \t\r\n");
+        if (first != std::string::npos) {
+            out.push_back(item.substr(first, last - first + 1));
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    return out;
+}
+
+/// 用环境变量覆盖连接参数，避免把地址/账号写死进源码
+void ApplyEnvDefaults(Ui::Widget* ui) {
+    if (const std::string url = GetEnvString("XRTC_JANUS_URL"); !url.empty()) {
+        ui->janus_url->setText(QString::fromUtf8(url.c_str()));
+    }
+    if (const std::string room = GetEnvString("XRTC_ROOM_ID"); !room.empty()) {
+        ui->room_id->setText(QString::fromUtf8(room.c_str()));
+    }
+    if (const std::string name = GetEnvString("XRTC_DISPLAY_NAME");
+        !name.empty()) {
+        ui->display_name->setText(QString::fromUtf8(name.c_str()));
+    }
+    // 旧的公网默认值不再随代码分发；URL 为空时提示用户填写
+    if (ui->janus_url->text().trimmed() ==
+        QStringLiteral("ws://8.153.155.18:8188/")) {
+        ui->janus_url->setText(QStringLiteral("ws://127.0.0.1:8188/"));
+    }
+}
 
 /// 将连接状态枚举转换为可读字符串，用于状态栏显示
 const char* ConnectionStateName(xrtc::XRTCConnectionState state) {
@@ -149,6 +198,7 @@ void Widget::on_video_request_changed() {
  * @brief 连接界面按钮的点击信号到对应的槽函数
  */
 void Widget::init_connection() {
+    ApplyEnvDefaults(ui);
     connect(ui->video_capture, &QPushButton::clicked, this,
             &Widget::start_video_source);
     connect(ui->btn_audio_preview, &QPushButton::clicked, this,
@@ -506,13 +556,35 @@ void Widget::join_meeting() {
     }
     engine->set_video_capture_request(current_video_request());
 
-    // 本机 coturn（勿留空，否则会退回 Google STUN）
-    config.ice_servers.push_back(
-        {"stun:8.153.155.18:3478", "", ""});
-    config.ice_servers.push_back(
-        {"turn:8.153.155.18:3478", "wang_y", "wang_y"});
-    config.ice_servers.push_back(
-        {"turn:8.153.155.18:3478?transport=tcp", "wang_y", "wang_y"});
+    // ICE 服务器只从环境变量读取：代码里不再内置任何公网地址或账号密码。
+    //   XRTC_ICE_URLS     逗号分隔，例如 "stun:host:3478,turn:host:3478"
+    //   XRTC_ICE_USERNAME TURN 用户名（STUN 可留空）
+    //   XRTC_ICE_PASSWORD TURN 密码
+    const std::string ice_user = GetEnvString("XRTC_ICE_USERNAME");
+    const std::string ice_pass = GetEnvString("XRTC_ICE_PASSWORD");
+    for (const auto& url : SplitCommaSeparated(GetEnvString("XRTC_ICE_URLS"))) {
+        config.ice_servers.push_back({url, ice_user, ice_pass});
+    }
+    if (config.ice_servers.empty()) {
+        spdlog::warn(
+            "[ui] XRTC_ICE_URLS 未设置：本次只用本地候选（仅同一网段可达）");
+    }
+    // 可选：覆盖 Janus 请求超时（毫秒），便于弱网/联调时验证超时路径
+    if (const std::string timeout_ms = GetEnvString("XRTC_SIGNAL_TIMEOUT_MS");
+        !timeout_ms.empty()) {
+        try {
+            config.signal_timeout_ms =
+                static_cast<uint32_t>(std::stoul(timeout_ms));
+        } catch (...) {
+            spdlog::warn("[ui] XRTC_SIGNAL_TIMEOUT_MS 非法: {}", timeout_ms);
+        }
+    }
+    // wss:// 证书配置：CA 文件与是否校验都由外部注入
+    config.ca_file = GetEnvString("XRTC_CA_FILE");
+    if (const std::string verify = GetEnvString("XRTC_TLS_VERIFY");
+        !verify.empty()) {
+        config.tls_verify = verify != "0";
+    }
 
     spdlog::info("[ui] join_meeting url={} room={} name={} create_if_missing={} ice={} video={}x{}@{} mic={}",
                  config.janus_ws_url, config.room_id, config.display_name,

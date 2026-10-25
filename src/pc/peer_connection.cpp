@@ -215,9 +215,11 @@ Rest<> PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers
         webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
 
     if (ice_servers.empty()) {
-        webrtc::PeerConnectionInterface::IceServer stun;
-        stun.uri = "stun:stun.l.google.com:19302";
-        config.servers.push_back(stun);
+        // 不内置任何公网 STUN：空配置时只用本地候选（同一网段可用），
+        // 避免把用户流量静默导向第三方服务器。需要 NAT 穿透请显式配置。
+        spdlog::warn(
+            "[pc:{}] no ICE servers configured; using host candidates only",
+            label_);
     } else {
         for (const auto& s : ice_servers) {
             webrtc::PeerConnectionInterface::IceServer server;

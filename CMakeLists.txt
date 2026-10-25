@@ -384,6 +384,22 @@ if(NOT TARGET Boost::headers)
 endif()
 message(STATUS "Boost headers: ${_boost_inc}")
 
+# ---------- wss://（TLS）—— 复用 webrtc.lib 内置的 BoringSSL ----------
+# WebRTC 静态库里已经包含 BoringSSL，SDK 同时分发了它的头文件。
+# 不要再链一份 OpenSSL：两者同名符号会导致 LNK2005（SSL_* 重复定义）。
+option(XRTC_ENABLE_WSS "Build wss:// (TLS) support on WebRTC's BoringSSL" ON)
+set(XRTC_HAVE_WSS OFF)
+set(XRTC_BORINGSSL_INCLUDE
+    "${WEBRTC_INCLUDE}/third_party/boringssl/src/include")
+if(XRTC_ENABLE_WSS AND EXISTS "${XRTC_BORINGSSL_INCLUDE}/openssl/ssl.h")
+    set(XRTC_HAVE_WSS ON)
+    message(STATUS "BoringSSL headers found: wss:// enabled")
+elseif(XRTC_ENABLE_WSS)
+    message(WARNING
+        "未找到 BoringSSL 头文件（${XRTC_BORINGSSL_INCLUDE}），"
+        "wss:// 不可用；仍支持 ws://。可加 -DXRTC_ENABLE_WSS=OFF 静默关闭。")
+endif()
+
 # ---------- xrtc SDK（对外仅暴露 include/xrtc，第三方对链接方彻底隔离）----------
 # 公开头：include/xrtc/*.h（无 WebRTC / utils / json / spdlog / Boost）
 # 内部头：include/{engine,janus,...}/*.h（PRIVATE include，链接方不可见）
@@ -411,6 +427,7 @@ target_include_directories(xrtc
         ${WEBRTC_INCLUDE}/third_party/abseil-cpp
         ${WEBRTC_INCLUDE}/third_party/libyuv/include
         ${WEBRTC_INCLUDE}
+        ${XRTC_BORINGSSL_INCLUDE}
 )
 
 target_link_libraries(xrtc
@@ -458,6 +475,10 @@ if(MSVC)
     message(STATUS "MSVC ${CMAKE_CXX_COMPILER_VERSION}: ${CMAKE_CXX_COMPILER}")
     target_compile_options(xrtc PRIVATE /utf-8 /bigobj /wd4068)
     target_compile_definitions(xrtc PRIVATE _WIN32_WINNT=0x0A00)
+endif()
+
+if(XRTC_HAVE_WSS)
+    target_compile_definitions(xrtc PRIVATE XRTC_HAVE_WSS=1)
 endif()
 
 # ---------- GoogleTest（submodule: third_party/google_test）----------
@@ -510,6 +531,7 @@ if(BUILD_XRTC_TESTS)
         tests/video_select_strategy_test.cpp
         tests/subscribe_state_test.cpp
         tests/session_lifecycle_test.cpp
+        tests/websocket_tls_test.cpp
     )
     target_link_libraries(xrtc_tests
         PRIVATE

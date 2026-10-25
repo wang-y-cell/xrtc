@@ -104,6 +104,7 @@ F:\Qt\6.8.3\msvc2022_64\bin 加入 PATH 后运行 build\Debug\demo\webrtc_test.e
 - **信令线程**：`JanusClient` 的所有公开方法都投递到它自己的线程执行，
   不再从 WebRTC api 线程直接改 `session_id_` / `subscribe_state_`。
 - **WSS**：`wss://` 现在可用（BoringSSL），默认校验证书链与主机名；
+  域名按 SAN `dNSName` 校验，IP 按 SAN `iPAddress` 校验（IP 不在 SAN 里会失败）。
   自签名证书用 `XRTC_CA_FILE` 指定 CA，或临时 `XRTC_TLS_VERIFY=0`。
 - **音频处理**：默认启用 AEC3 / 降噪(kHigh) / AGC(kAdaptiveDigital) / 高通，
   不再把 `audio_processing=nullptr` 交给工厂。

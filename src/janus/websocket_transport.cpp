@@ -11,6 +11,7 @@
 #include <utility>
 
 #include <boost/asio/connect.hpp>
+#include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/beast/core.hpp>
@@ -258,10 +259,22 @@ struct WebsocketTransport::Impl {
 
 #ifdef XRTC_HAVE_WSS
         if (ws_tls) {
-            // 校验证书里的主机名（verify=false 时不设置，避免自签名联调被拒）
+            // 校验证书身份：域名走 SAN dNSName，IP 走 SAN iPAddress。
+            // 不能用 host_name_verification 处理 IP 字面量（X509_check_host 不匹配 IP SAN）。
             if (tls_options.verify) {
-                ws_tls->next_layer().set_verify_callback(
-                    ssl::host_name_verification(address));
+                X509_VERIFY_PARAM* param =
+                    SSL_get0_param(ws_tls->next_layer().native_handle());
+                boost::system::error_code ip_ec;
+                net::ip::make_address(address, ip_ec);
+                const int ok = ip_ec
+                                   ? X509_VERIFY_PARAM_set1_host(
+                                         param, address.c_str(), 0)
+                                   : X509_VERIFY_PARAM_set1_ip_asc(
+                                         param, address.c_str());
+                if (ok != 1) {
+                    return notify_error(
+                        "tls: failed to configure certificate identity check");
+                }
             }
             // TLS 握手先于 WebSocket 升级；按 SNI 送达域名，虚拟主机才能选中正确证书
             if (!SSL_set_tlsext_host_name(ws_tls->next_layer().native_handle(),

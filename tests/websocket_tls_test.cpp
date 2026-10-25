@@ -131,7 +131,7 @@ TEST(WebsocketTls, EchoRoundTrip) {
                return probe.error;
            }();
 
-    ws.send_text("{\"janus\":\"create\"}");
+    ws.send_text("{\"janus\":\"create\",\"transaction\":\"smoke-1\"}");
     ASSERT_TRUE(WaitFor([&] { return probe.got_message.load(); }, 10s))
         << "no echo within 10s";
     {

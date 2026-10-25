@@ -1,4 +1,4 @@
-﻿#include <session/call_session.h>
+#include <session/call_session.h>
 
 #include "api/audio_options.h"
 #include "api/units/time_delta.h"
@@ -56,6 +56,8 @@ void CallSession::bindJanusSignals() {
         utils::connect(janus_->hangup, this, &CallSession::onJanusHangup));
     janus_conns_.emplace_back(
         utils::connect(janus_->error, this, &CallSession::onJanusError));
+    janus_conns_.emplace_back(utils::connect(
+        janus_->request_timeout, this, &CallSession::onJanusRequestTimeout));
     janus_conns_.emplace_back(
         utils::connect(janus_->destroyed, this, &CallSession::onJanusDestroyed));
 }
@@ -145,12 +147,12 @@ slots_t<> CallSession::onSubscriberOffer(uint64_t feed_id,
 
             PeerConnectionHandler::Callbacks pcb;
             pcb.on_local_description =
-                [this, handle_id, gen](const std::string& type,
-                                       const std::string& sdp) {
+                [this, handle_id, feed_id, gen](const std::string& type,
+                                                const std::string& sdp) {
                     if (!isCurrentGeneration(gen)) {
                         return;
                     }
-                    onSubscriberLocalSdp(handle_id, type, sdp);
+                    onSubscriberLocalSdp(handle_id, feed_id, type, sdp);
                 };
             pcb.on_ice_candidate = [this, handle_id, gen](const std::string& mid,
                                                           int idx,
@@ -401,39 +403,7 @@ void CallSession::dropSubscriber(uint64_t handle_id, const std::string& reason,
     // 释放 Janus 侧 handle，并清 subscribe_state，允许重新 Subscribe
     janus_->DetachSubscriber(feed_id);
 
-    int retries = 0;
-    if (auto rit = subscriber_retry_count_.find(feed_id);
-        rit != subscriber_retry_count_.end()) {
-        retries = rit->second;
-    }
-
-    if (retry && life_.active && retries < kMaxSubscriberRetries) {
-        subscriber_retry_count_[feed_id] = retries + 1;
-        spdlog::info(
-            "[session] retry subscribe feed={} attempt={}/{} after: {}",
-            feed_id, retries + 1, kMaxSubscriberRetries, reason);
-        JanusPublisherInfo info;
-        info.feed_id = feed_id;
-        if (auto dit = feed_to_display_.find(feed_id);
-            dit != feed_to_display_.end()) {
-            info.display = dit->second;
-        }
-        const uint64_t gen = life_.generation;
-        // 稍后再订，避开 Janus 刚 hangup 的瞬态
-        XRtcGlobal::instance().api_thread()->PostDelayedTask(
-            [this, info, gen]() {
-                if (!isCurrentGeneration(gen) || !life_.active) {
-                    return;
-                }
-                // 对端已离开则不再重订
-                if (feed_to_display_.find(info.feed_id) ==
-                    feed_to_display_.end()) {
-                    subscriber_retry_count_.erase(info.feed_id);
-                    return;
-                }
-                subscribeFeed(info);
-            },
-            webrtc::TimeDelta::Millis(800 * (retries + 1)));
+    if (retry && scheduleSubscribeRetry(feed_id, reason)) {
         return;
     }
 
@@ -453,6 +423,100 @@ void CallSession::dropSubscriber(uint64_t handle_id, const std::string& reason,
     } else {
         feed_to_display_.erase(feed_id);
     }
+}
+
+bool CallSession::scheduleSubscribeRetry(uint64_t feed_id,
+                                         const std::string& reason) {
+    if (!life_.active) {
+        return false;
+    }
+    int retries = 0;
+    if (auto rit = subscriber_retry_count_.find(feed_id);
+        rit != subscriber_retry_count_.end()) {
+        retries = rit->second;
+    }
+    if (retries >= kMaxSubscriberRetries) {
+        return false;
+    }
+
+    subscriber_retry_count_[feed_id] = retries + 1;
+    spdlog::info("[session] retry subscribe feed={} attempt={}/{} after: {}",
+                 feed_id, retries + 1, kMaxSubscriberRetries, reason);
+    JanusPublisherInfo info;
+    info.feed_id = feed_id;
+    if (auto dit = feed_to_display_.find(feed_id);
+        dit != feed_to_display_.end()) {
+        info.display = dit->second;
+    }
+    const uint64_t gen = life_.generation;
+    // 稍后再订，避开 Janus 刚 hangup 的瞬态
+    XRtcGlobal::instance().api_thread()->PostDelayedTask(
+        [this, info, gen]() {
+            if (!isCurrentGeneration(gen) || !life_.active) {
+                return;
+            }
+            // 对端已离开则不再重订
+            if (feed_to_display_.find(info.feed_id) == feed_to_display_.end()) {
+                subscriber_retry_count_.erase(info.feed_id);
+                return;
+            }
+            subscribeFeed(info);
+        },
+        webrtc::TimeDelta::Millis(800 * (retries + 1)));
+    return true;
+}
+
+slots_t<> CallSession::onJanusRequestTimeout(uint64_t feed_id,
+                                             const std::string& what) {
+    const uint64_t gen = life_.generation;
+    XRtcGlobal::instance().api_thread()->PostTask([this, feed_id, what, gen]() {
+        if (gen != life_.generation) {
+            return;
+        }
+        const std::string msg = "janus request timeout: " + what;
+        spdlog::warn("[session] {}", msg);
+
+        // 会话/发布者级请求超时：整场失败
+        if (feed_id == 0) {
+            if (life_.join_notified) {
+                failAfterJoined(XRtcError::kSignalingFailed, msg);
+            } else {
+                failJoin(XRtcError::kSignalingFailed, msg);
+            }
+            return;
+        }
+
+        // 订阅某一路超时：只清该路残留，按退避重试
+        for (auto it = handle_to_feed_.begin(); it != handle_to_feed_.end();) {
+            if (it->second == feed_id) {
+                clearPendingRemoteIce(it->first);
+                subscriber_pcs_.erase(it->first);
+                it = handle_to_feed_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        detachRemoteMedia(feed_id);
+
+        if (scheduleSubscribeRetry(feed_id, msg)) {
+            return;
+        }
+        subscriber_retry_count_.erase(feed_id);
+        remote_joined_notified_.erase(feed_id);
+        std::string display;
+        if (auto dit = feed_to_display_.find(feed_id);
+            dit != feed_to_display_.end()) {
+            display = dit->second;
+            feed_to_display_.erase(dit);
+        }
+        if (auto* obs = XRtcGlobal::instance().observer()) {
+            XRTCRemoteUser user;
+            user.feed_id = feed_id;
+            user.display = std::move(display);
+            obs->on_remote_user_left(user);
+        }
+    });
+    return {};
 }
 
 slots_t<> CallSession::onJanusDestroyed() {
@@ -686,10 +750,20 @@ void CallSession::pushBlackLocalFrame(IXRtcMediaSource* source, int width,
 }
 
 void CallSession::applyVideoSendParams(bool for_screen, int width, int height,
-                                       int fps) {
+                                       int fps, int max_bitrate_kbps) {
     if (publisher_pc_) {
-        publisher_pc_->ConfigureVideoSend(width, height, fps, for_screen);
+        publisher_pc_->ConfigureVideoSend(width, height, fps, for_screen,
+                                          max_bitrate_kbps);
     }
+}
+
+void CallSession::SetScreenShareConfig(const XRTCScreenShareConfig& config) {
+    screen_config_ = config;
+    spdlog::info(
+        "[session] screen share config: max_long_edge={} fps={} "
+        "max_bitrate_kbps={} remote_max_long_edge={}",
+        config.max_long_edge, config.fps, config.max_bitrate_kbps,
+        config.remote_max_long_edge);
 }
 
 Rest<> CallSession::StartLocalVideo() {
@@ -718,7 +792,7 @@ Rest<> CallSession::StartLocalVideo() {
         const auto fmt = capture_->capture_format();
         applyVideoSendParams(false, fmt.width > 0 ? fmt.width : config_.width,
                              fmt.height > 0 ? fmt.height : config_.height,
-                             fmt.fps > 0 ? fmt.fps : config_.fps);
+                             fmt.fps > 0 ? fmt.fps : config_.fps, 0);
         spdlog::info("[session] local video capture started");
         return xrtc_ok();
     };
@@ -791,8 +865,16 @@ Rest<> CallSession::StartLocalScreen(const std::string& screen_id) {
         if (camera_was_on) {
             stopCameraCapture();
         }
+        // 画质配置（分辨率上限/帧率）变了：重建采集器，否则沿用
+        const int want_fps = screen_config_.fps > 0 ? screen_config_.fps : 30;
+        const int want_edge = screen_config_.max_long_edge;
+        if (screen_ && (screen_->configured_fps() != want_fps ||
+                        screen_->configured_max_long_edge() != want_edge)) {
+            stopScreenCapture();
+            screen_.reset();
+        }
         if (!screen_) {
-            screen_ = ScreenCapture::Create(screen_id);
+            screen_ = ScreenCapture::Create(screen_id, want_edge, want_fps);
             if (!screen_) {
                 spdlog::error("[session] StartLocalScreen: create failed id='{}'",
                               screen_id);
@@ -820,7 +902,8 @@ Rest<> CallSession::StartLocalScreen(const std::string& screen_id) {
         screen_active_ = true;
         local_video_capturing_ = true;
         const auto fmt = screen_->capture_format();
-        applyVideoSendParams(true, fmt.width, fmt.height, fmt.fps);
+        applyVideoSendParams(true, fmt.width, fmt.height, fmt.fps,
+                             screen_config_.max_bitrate_kbps);
         spdlog::info("[session] screen capture started id={} {}x{}@{}",
                      screen_->screen_id(), fmt.width, fmt.height, fmt.fps);
         return xrtc_ok();
@@ -1013,7 +1096,14 @@ Rest<> CallSession::ensureLocalMedia() {
     // 创建音频轨道
     if (!audio_track_) {
         spdlog::info("[session] CreateAudioSource/Track");
-        auto audio_source = factory->CreateAudioSource(webrtc::AudioOptions());
+        // 与 XRtcGlobal 里的 APM 配置保持一致：显式打开 AEC / NS / AGC / HPF，
+        // 避免依赖 AudioOptions 默认值（默认值随 WebRTC 版本变化）。
+        webrtc::AudioOptions audio_options;
+        audio_options.echo_cancellation = true;
+        audio_options.noise_suppression = true;
+        audio_options.auto_gain_control = true;
+        audio_options.highpass_filter = true;
+        auto audio_source = factory->CreateAudioSource(audio_options);
         audio_track_ = factory->CreateAudioTrack("audio0", audio_source.get());
         audio_track_->set_enabled(false); //关闭推流
     }
@@ -1153,16 +1243,17 @@ void CallSession::onPublisherLocalSdp(const std::string& type,
     janus_->Publish(jsep);
 }
 
-void CallSession::onSubscriberLocalSdp(uint64_t handle_id,
+void CallSession::onSubscriberLocalSdp(uint64_t handle_id, uint64_t feed_id,
                                        const std::string& type,
                                        const std::string& sdp) {
     spdlog::info(
-        "[session] subscriber local SDP handle={} type={} bytes={} -> start",
-        handle_id, type, sdp.size());
+        "[session] subscriber local SDP handle={} feed={} type={} bytes={} -> "
+        "start",
+        handle_id, feed_id, type, sdp.size());
     JanusJsep jsep;
     jsep.type = type;
     jsep.sdp = sdp;
-    janus_->StartSubscriber(handle_id, jsep);
+    janus_->StartSubscriber(handle_id, feed_id, jsep);
 }
 
 void CallSession::subscribeFeed(const JanusPublisherInfo& info) {
@@ -1224,19 +1315,25 @@ void CallSession::attachRemoteTrack(
 
     RemoteVideoAttachment att;
     att.track = video;
+    // remote_max_long_edge=0 表示不做 SDK 侧缩放，保留对端原始分辨率
+    const int render_cap = screen_config_.remote_max_long_edge;
     att.sink = std::make_unique<RemoteVideoSink>(
-        feed_id, [](uint64_t id, const XRTCVideoFrame& frame) {
+        feed_id, render_cap,
+        [](uint64_t id, const XRTCVideoFrame& frame) {
             if (auto* obs = XRtcGlobal::instance().observer()) {
                 obs->on_remote_video_frame(id, frame);
             }
         });
-    video->AddOrUpdateSink(att.sink.get(), [] {
+    video->AddOrUpdateSink(att.sink.get(), [render_cap] {
         webrtc::VideoSinkWants wants;
-        // 远端渲染限到约 720p，避免多路全分辨率解码+上传
-        wants.max_pixel_count = 1280 * 720;
-        wants.target_pixel_count = 960 * 540;
-        wants.max_framerate_fps = 30;
         wants.rotation_applied = true;
+        wants.max_framerate_fps = 30;
+        if (render_cap > 0) {
+            // 仅当显式限制时才给解码/渲染设上限；0 = 不限制
+            const int max_pixels = render_cap * render_cap;
+            wants.max_pixel_count = max_pixels;
+            wants.target_pixel_count = max_pixels / 2;
+        }
         return wants;
     }());
     remote_videos_[feed_id] = std::move(att);

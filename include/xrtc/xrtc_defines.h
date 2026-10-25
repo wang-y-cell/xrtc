@@ -33,6 +33,21 @@ struct XRTCVideoCaptureRequest {
         XRTCVideoSelectStrategy::kPreferRequested;
 };
 
+/// 屏幕共享画质配置：采集分辨率上限、帧率、发送码率、远端渲染上限
+struct XRTCScreenShareConfig {
+    /// 采集长边上限：0 = 不缩放（按显示器原始分辨率），默认 2560。
+    /// 4K 屏会按比例缩到 2560，1080p 屏保持 1920。
+    int max_long_edge = 2560;
+    /// 采集与发送帧率上限（1~60），默认 30
+    int fps = 30;
+    /// 发送码率上限 kbps；<=0 表示按分辨率×帧率自动估算
+    /// （约 w*h*fps*0.1 bit/s，夹在 1~20 Mbps）。只在屏幕共享时生效。
+    int max_bitrate_kbps = 0;
+    /// 收到远端画面后的渲染长边上限：0 = 不缩放（保留原始分辨率），默认 0。
+    /// 摄像头/屏幕共享同时生效；用于控制多路高分辨率时的 CPU。
+    int remote_max_long_edge = 0;
+};
+
 ///视频配置,包括视频宽度、视频高度、视频帧率、设备ID
 struct ixrtc_video_config {
     int width = 0;            /// 0 表示使用 engine 当前采集请求
@@ -88,6 +103,14 @@ struct XRTCJoinConfig {
     XRTCVideoSelectStrategy select_strategy =
         XRTCVideoSelectStrategy::kPreferRequested;
     std::vector<XRTCIceServer> ice_servers;  /// 为空则使用默认 STUN
+    /// 单个 Janus 请求（create/attach/join/publish）的超时时间，毫秒。
+    /// <=0 表示使用默认值 10000ms。超时后会话级请求整场失败，订阅级请求按路重试。
+    uint32_t signal_timeout_ms = 10000;
+    /// wss:// 使用的 CA 证书链文件（PEM）。为空时依次用环境变量
+    /// XRTC_CA_FILE / SSL_CERT_FILE / CURL_CA_BUNDLE，最后用 OpenSSL 默认路径。
+    std::string ca_file;
+    /// wss:// 是否校验证书。false 仅用于自签名证书联调，生产必须保持 true。
+    bool tls_verify = true;
 };
 
 /// SDK / Rest<> 统一错误码

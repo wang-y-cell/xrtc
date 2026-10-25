@@ -69,6 +69,10 @@ public:
     /// 切换摄像头；更新 config，若采集器已创建则 device_switch
     Rest<> SwitchVideoDevice(const std::string& device_id);
 
+    /// 更新屏幕共享画质（采集参数下次 start_local_screen 生效；
+    /// 远端渲染上限对新订阅生效）
+    void SetScreenShareConfig(const XRTCScreenShareConfig& config);
+
     /// 本地摄像头硬件是否正在采集
     bool local_video_capturing() const { return local_video_capturing_; }
     /// 本地麦克风硬件是否正在录音
@@ -117,11 +121,15 @@ private:
     slots_t<> onJanusHangup(uint64_t handle_id, const std::string& reason);
     /// 信令层错误：按是否已进房走 failJoin / failAfterJoined
     slots_t<> onJanusError(const std::string& err);
+    /// Janus 请求超时：feed==0 会话级失败；feed!=0 只重试该路订阅
+    slots_t<> onJanusRequestTimeout(uint64_t feed_id, const std::string& what);
     /// WebSocket/会话销毁（含安静断线）：走 SessionLifecycle 清理
     slots_t<> onJanusDestroyed();
     /// 订阅路失败：只拆该 PC，可选稍后重试 Subscribe（不拆整场）
     void dropSubscriber(uint64_t handle_id, const std::string& reason,
                         bool retry);
+    /// 按 feed 退避重试订阅；返回 false 表示已达最大次数，由调用方收尾
+    bool scheduleSubscribeRetry(uint64_t feed_id, const std::string& reason);
     ///在 Janus 进房成功后，准备本地轨与采集器（默认不开采，由 StartLocal* 手动开）
     Rest<> ensureLocalMedia();
     /// 停摄像头硬件采集，并把视频源标成结束
@@ -130,8 +138,9 @@ private:
     void stopScreenCapture();
     /// 向本地轨和预览各推一帧黑图，避免停采集后画面停在最后一帧
     void pushBlackLocalFrame(IXRtcMediaSource* source, int width, int height);
-    /// 按摄像头或屏幕更新发送端帧率上限与 content hint
-    void applyVideoSendParams(bool for_screen, int width, int height, int fps);
+    /// 按摄像头或屏幕更新发送端帧率上限、码率与 content hint
+    void applyVideoSendParams(bool for_screen, int width, int height, int fps,
+                              int max_bitrate_kbps);
     /// 进房后默认禁推流，等待上层 start_local_*
     void muteLocalTracks(bool mute);
     ///设置peerconnectionHandler回调函数,创建peerconnectionHandler对象,调用init函数创建peerconnection对象,并将视频轨道和音频轨道加入进去
@@ -142,8 +151,8 @@ private:
     /// Publisher：本地 offer 就绪后 JanusClient::Publish
     void onPublisherLocalSdp(const std::string& type, const std::string& sdp);
     /// Subscriber：本地 answer 就绪后 JanusClient::StartSubscriber
-    void onSubscriberLocalSdp(uint64_t handle_id, const std::string& type,
-                              const std::string& sdp);
+    void onSubscriberLocalSdp(uint64_t handle_id, uint64_t feed_id,
+                              const std::string& type, const std::string& sdp);
     /// OnTrack：挂远端音/视频（视频加 RemoteVideoSink → UI 回调）
     void attachRemoteTrack(
         uint64_t feed_id,
@@ -161,6 +170,8 @@ private:
     void clearPendingRemoteIce(uint64_t handle_id);
 
     XRTCJoinConfig config_;
+    /// 屏幕共享画质：采集上限 / 帧率 / 码率 / 远端渲染上限
+    XRTCScreenShareConfig screen_config_;
     /// 进房/退房/失败世代与通知决策
     SessionLifecycle life_;
 

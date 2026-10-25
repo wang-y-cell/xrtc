@@ -12,18 +12,21 @@
 
 namespace xrtc {
 
-/// 远端 VideoTrack 的 sink：取 I420（可降分辨率），回调业务层
+/// 远端 VideoTrack 的 sink：取 I420，按需缩放后回调业务层。
+/// max_long_edge<=0 表示保留对端原始分辨率（不做 SDK 侧缩放）。
 class RemoteVideoSink : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
 public:
     using FrameCallback =
         std::function<void(uint64_t feed_id, const XRTCVideoFrame& frame)>;
 
-    RemoteVideoSink(uint64_t feed_id, FrameCallback cb);
+    RemoteVideoSink(uint64_t feed_id, int max_long_edge, FrameCallback cb);
     void OnFrame(const webrtc::VideoFrame& frame) override;
 
 private:
     ///@brief 远端视频流的ID
     uint64_t feed_id_ = 0;
+    /// 渲染长边上限；0 = 不缩放
+    int max_long_edge_ = 0;
     ///@brief 将 I420 帧交给上层（OpenGL 等）
     FrameCallback callback_;
 };

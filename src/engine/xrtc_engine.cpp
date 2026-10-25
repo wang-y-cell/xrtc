@@ -1,4 +1,4 @@
-﻿#include <engine/xrtc_engine.h>
+#include <engine/xrtc_engine.h>
 
 #include "rtc_base/thread.h"
 #include <engine/xrtc_global.h>
@@ -195,6 +195,21 @@ XRTCVideoCaptureRequest XRtcEngine::get_video_capture_request() const {
         [this]() -> XRTCVideoCaptureRequest { return video_capture_request_; });
 }
 
+void XRtcEngine::set_screen_share_config(
+    const XRTCScreenShareConfig& config) {
+    XRtcGlobal::instance().api_thread()->BlockingCall([this, config]() {
+        screen_share_config_ = config;
+        if (call_session_) {
+            call_session_->SetScreenShareConfig(config);
+        }
+    });
+}
+
+XRTCScreenShareConfig XRtcEngine::get_screen_share_config() const {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [this]() -> XRTCScreenShareConfig { return screen_share_config_; });
+}
+
 IXRtcMediaSource* XRtcEngine::create_video_source(
     const ixrtc_video_config& video_config
 ) {
@@ -292,6 +307,8 @@ void XRtcEngine::join(const XRTCJoinConfig& config) {
         if (!call_session_) {
             call_session_ = std::make_unique<CallSession>();
         }
+        // 屏幕共享画质随会话保存；进房前设置也生效
+        call_session_->SetScreenShareConfig(screen_share_config_);
         call_session_->Start(cfg);
     });
 }

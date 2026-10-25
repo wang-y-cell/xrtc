@@ -1,5 +1,6 @@
 #include <pc/peer_connection.h>
 
+#include <algorithm>
 #include <atomic>
 #include <utility>
 
@@ -215,9 +216,11 @@ Rest<> PeerConnectionHandler::Init(const std::vector<XRTCIceServer>& ice_servers
         webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
 
     if (ice_servers.empty()) {
-        webrtc::PeerConnectionInterface::IceServer stun;
-        stun.uri = "stun:stun.l.google.com:19302";
-        config.servers.push_back(stun);
+        // 不内置任何公网 STUN：空配置时只用本地候选（同一网段可用），
+        // 避免把用户流量静默导向第三方服务器。需要 NAT 穿透请显式配置。
+        spdlog::warn(
+            "[pc:{}] no ICE servers configured; using host candidates only",
+            label_);
     } else {
         for (const auto& s : ice_servers) {
             webrtc::PeerConnectionInterface::IceServer server;
@@ -279,12 +282,12 @@ Rest<> PeerConnectionHandler::AddTrack(
 }
 
 void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps,
-                                               bool for_screen) {
+                                               bool for_screen,
+                                               int max_bitrate_kbps) {
     if (!pc_) {
         return;
     }
-    // 不设 max_bitrate_bps：交给 WebRTC 拥塞控制自适应，便于排查卡顿是否被硬上限卡住
-    const double fallback_fps = for_screen ? 15.0 : 30.0;
+    const double fallback_fps = 30.0;
     const double max_fps = fps > 0 ? static_cast<double>(fps) : fallback_fps;
 
     for (const auto& sender : pc_->GetSenders()) {
@@ -305,8 +308,24 @@ void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps,
             for_screen ? webrtc::DegradationPreference::MAINTAIN_RESOLUTION
                        : webrtc::DegradationPreference::BALANCED;
         if (!params.encodings.empty()) {
-            params.encodings[0].max_bitrate_bps.reset();
             params.encodings[0].max_framerate = max_fps;
+            if (max_bitrate_kbps > 0) {
+                params.encodings[0].max_bitrate_bps = static_cast<int>(
+                    std::clamp<int64_t>(static_cast<int64_t>(max_bitrate_kbps) *
+                                            1000,
+                                        100000, 20000000));
+            } else if (for_screen && width > 0 && height > 0 && max_fps > 0) {
+                // 屏幕共享：按像素率估一个足够高的上限（约 0.1 bit/像素），
+                // 只设上限、不强制码率，拥塞时仍由 WebRTC 自适应。
+                const int64_t auto_bps =
+                    static_cast<int64_t>(width) * height *
+                    static_cast<int64_t>(max_fps) / 10;
+                params.encodings[0].max_bitrate_bps = static_cast<int>(
+                    std::clamp<int64_t>(auto_bps, 1000000, 20000000));
+            } else {
+                // 摄像头：不设硬上限，交给拥塞控制
+                params.encodings[0].max_bitrate_bps.reset();
+            }
         }
         const webrtc::RTCError err = sender->SetParameters(params);
         if (!err.ok()) {
@@ -314,8 +333,12 @@ void PeerConnectionHandler::ConfigureVideoSend(int width, int height, int fps,
                          label_, err.message());
         } else {
             spdlog::info(
-                "[pc:{}] ConfigureVideoSend {}x{}@{} screen={} max_bitrate=unlimited",
-                label_, width, height, static_cast<int>(max_fps), for_screen);
+                "[pc:{}] ConfigureVideoSend {}x{}@{} screen={} "
+                "max_bitrate_kbps={}",
+                label_, width, height, static_cast<int>(max_fps), for_screen,
+                params.encodings.empty() || !params.encodings[0].max_bitrate_bps
+                    ? 0
+                    : *params.encodings[0].max_bitrate_bps / 1000);
         }
         break;
     }

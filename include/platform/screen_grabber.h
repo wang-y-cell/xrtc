@@ -17,8 +17,8 @@
 
 namespace xrtc {
 
-/// 一帧桌面画面（BGRA，紧凑排列）。WebRTC 实现里光标已经合成进画面。
-/// 指针只在下一次 poll/close 之前有效。
+/// 一帧桌面画面（BGRA，紧凑排列，**源分辨率**）。WebRTC 实现里光标已经合成进画面。
+/// 指针只在下一次 poll/close 之前有效。缩放与 I420 转换由 ScreenCapture 负责。
 struct ScreenDesktopFrame {
     int width = 0;
     int height = 0;
@@ -42,13 +42,14 @@ public:
         kFailed,       /// 无法继续采集
     };
 
-    /// 打开 screen_id 对应的显示器。id 须已由 resolve_screen_id 解析
-    virtual bool open(const std::string& screen_id) = 0;
+    /// 打开 screen_id 对应的显示器。id 须已由 resolve_screen_id 解析。
+    /// max_fps 为采集器帧率上限（最终输出帧率由 ScreenCapture 控制）
+    virtual bool open(const std::string& screen_id, int max_fps) = 0;
     /// 释放本次采集占用的系统资源
     virtual void close() = 0;
     /// 等待最多 timeout_ms 毫秒，尝试取一帧桌面
     virtual PollResult poll(int timeout_ms) = 0;
-    /// 最近一帧缩放后的桌面。尚未采到画面时 bgra 可能为空，宽高仍有效
+    /// 最近一帧原始桌面（源分辨率）。尚未采到画面时 bgra 可能为空，宽高仍有效
     virtual ScreenDesktopFrame frame() const = 0;
     /// 是否已经至少成功采到一帧
     virtual bool has_frame() const = 0;

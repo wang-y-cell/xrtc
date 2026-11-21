@@ -416,6 +416,7 @@ add_library(xrtc STATIC
     src/media/xrtc_audio_device_module.cpp
     src/media/video_capability_selector.cpp
     src/session/call_session.cpp
+    src/janus/websocket_config.cpp
     src/janus/websocket_transport.cpp
     src/janus/janus_client.cpp
 )
@@ -528,6 +529,7 @@ if(BUILD_XRTC_TESTS)
     add_executable(xrtc_tests
         tests/janus_event_utils_test.cpp
         tests/websocket_url_test.cpp
+        tests/transport_config_test.cpp
         tests/video_select_strategy_test.cpp
         tests/subscribe_state_test.cpp
         tests/session_lifecycle_test.cpp

@@ -1,5 +1,6 @@
 #include <janus/janus_client.h>
 #include <janus/janus_event_utils.h>
+#include <janus/websocket_config.h>
 
 #include <chrono>
 #include <utility>
@@ -12,12 +13,17 @@ namespace {
 /// 默认单次 Janus 请求超时（毫秒）；可由 XRTCJoinConfig::signal_timeout_ms 覆盖
 constexpr uint32_t kDefaultRequestTimeoutMs = 10000;
 
-/// 把 join 配置里的 TLS 选项转成传输层参数
-WebsocketTlsOptions MakeTlsOptions(const XRTCJoinConfig& config) {
-    WebsocketTlsOptions tls;
-    tls.verify = config.tls_verify;
-    tls.ca_file = config.ca_file;
-    return tls;
+/// Janus 走 VideoRoom 插件时固定的 WebSocket 子协议
+constexpr const char* kJanusSubprotocol = "janus-protocol";
+
+/// 把进房配置翻译成传输层参数（URL 策略 + TLS 解析都在这里收口，
+/// 传输层因此不需要认识 XRTCJoinConfig，也不需要读环境变量）
+WebsocketTransportConfig MakeTransportConfig(const XRTCJoinConfig& config) {
+    WebsocketTransportConfig out;
+    out.url = config.janus_ws_url;
+    out.subprotocol = kJanusSubprotocol;
+    out.tls = ResolveWebsocketTlsOptions(config.tls_verify, config.ca_file);
+    return out;
 }
 
 }  // namespace
@@ -208,6 +214,22 @@ Rest<> JanusClient::do_connect(const XRTCJoinConfig& config) {
     spdlog::info("[janus] Connect url={} room={} display={} timeout_ms={}",
                  config.janus_ws_url, config.room_id, config.display_name,
                  config.signal_timeout_ms);
+    // 连接前先按调用方的策略校验 scheme：只想要加密时拒绝明文 ws://
+    switch (CheckWebsocketUrlPolicy(config.janus_ws_url,
+                                    config.allow_plaintext_ws)) {
+        case WebsocketUrlPolicy::kInvalidUrl:
+            spdlog::error("[janus] invalid websocket url: {}",
+                          config.janus_ws_url);
+            return xrtc_err(XRtcError::kInvalidParam);
+        case WebsocketUrlPolicy::kPlaintextRejected:
+            spdlog::error(
+                "[janus] plaintext ws:// rejected (allow_plaintext_ws=false): "
+                "{}",
+                config.janus_ws_url);
+            return xrtc_err(XRtcError::kInvalidParam);
+        case WebsocketUrlPolicy::kOk:
+            break;
+    }
     //设置加入janus的配置
     config_ = config;
     request_timeout_ms_ = config.signal_timeout_ms > 0
@@ -223,7 +245,7 @@ Rest<> JanusClient::do_connect(const XRTCJoinConfig& config) {
         tx_ops_.clear();
         tx_feeds_.clear();
     }
-    auto st = transport_->open(config.janus_ws_url, MakeTlsOptions(config));
+    auto st = transport_->open(MakeTransportConfig(config));
     //如果连接服务器失败,则返回错误
     if (!st) {
         spdlog::error("[janus] transport open failed: {}",

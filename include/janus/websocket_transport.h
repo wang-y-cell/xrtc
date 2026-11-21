@@ -4,24 +4,18 @@
 #include <string>
 
 #include "concurrency/signal_and_slots.h"
-#include <xrtc/xrtc_defines.h>
 #include <internal/xrtc_result.h>
+#include <janus/websocket_config.h>
 
 namespace xrtc {
 
-/// WebSocket(TLS) 连接参数。仅对 wss:// 生效。
-struct WebsocketTlsOptions {
-    /// 是否校验服务端证书链与主机名；生产环境必须为 true。
-    /// 置 false 只用于自签名证书的自建 Janus 联调。
-    bool verify = true;
-    /// CA 证书链文件（PEM）。为空时依次尝试环境变量
-    /// XRTC_CA_FILE / SSL_CERT_FILE / CURL_CA_BUNDLE，最后用 OpenSSL 默认路径。
-    std::string ca_file;
-};
-
 /// WebSocket 客户端（Boost.Beast）：ws:// 明文，wss:// TLS。
 /// 只负责连接与收发文本帧，Janus 协议由 JanusClient 负责。
-/// TLS 支持在编译期由 XRTC_HAVE_WSS 决定；未编入时 wss:// 会返回明确错误。
+///
+/// 与上层解耦的点：
+/// - 连接参数全部来自 WebsocketTransportConfig，传输层不读环境变量、不认识 Janus；
+/// - 明文/TLS 的差异收敛在内部通道接口里，对外只有 open/send_text/close；
+/// - TLS 支持在编译期由 XRTC_HAVE_WSS 决定，未编入时 wss:// 返回明确错误。
 class WebsocketTransport : public utils::object {
 public:
     WebsocketTransport();
@@ -36,10 +30,10 @@ public:
     utils::signal<> disconnected{this}; //连接断开之后调用槽函数,将数据传递给janus_client
     utils::signal<std::string> error{this}; //接收到错误之后调用槽函数,将错误传递给janus_client
 
-    //解析这个url之后连接这个服务器,并开启网络线程,线程运行事件循环,
-    // 等待网络事件的发生,websocket握手完成,可以接收数据和发送数据(send_text)
-    Rest<> open(const std::string& url,
-                const WebsocketTlsOptions& tls = WebsocketTlsOptions());
+    /// 建立连接并开启网络线程。
+    /// 返回失败表示参数层面的错误（URL 非法、CA 加载失败、wss 未编入）；
+    /// 连接/握手/读写的异步失败通过 error 信号上报，只上报一次。
+    Rest<> open(const WebsocketTransportConfig& config);
     //发送消息到服务端,真正发送消息的函数,但是由jansu_client调用,用来发送正真的janus信令信息
     void send_text(const std::string& text);
     //关闭连接

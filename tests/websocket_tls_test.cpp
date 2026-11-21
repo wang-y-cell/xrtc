@@ -121,7 +121,15 @@ TEST(WebsocketTls, EchoRoundTrip) {
     conns.emplace_back(
         utils::connect(ws.error, &probe, &TransportProbe::on_error));
 
-    const auto st = ws.open(url, TlsFromEnv());
+    const auto st = [&] {
+        // 覆盖「域名（SAN dNSName）+ 自签 CA」这条路径：曾经的实现用
+        // X509_VERIFY_PARAM_set1_host，在本 SDK 的 BoringSSL 上返回 0，
+        // 导致所有 wss://域名 都连不上；现由 X509_check_host 完成。
+        xrtc::WebsocketTransportConfig config;
+        config.url = url;
+        config.tls = TlsFromEnv();
+        return ws.open(config);
+    }();
     ASSERT_TRUE(st) << xrtc::XRtcErrorToString(st.error());
 
     ASSERT_TRUE(WaitFor([&] { return probe.connected.load(); }, 10s))
@@ -140,6 +148,38 @@ TEST(WebsocketTls, EchoRoundTrip) {
             << "unexpected echo: " << probe.message;
     }
     ws.close();
+}
+
+// 不需要服务端：CA 文件加载失败必须在 open() 阶段同步报错，
+// 而不是等到握手时才给出笼统的 handshake 失败。
+TEST(WebsocketTls, MissingCaFileFailsSynchronously) {
+    xrtc::WebsocketTransport ws;
+    xrtc::WebsocketTransportConfig config;
+    config.url = "wss://localhost:8989/janus";
+    config.tls.ca_file = "Z:/xrtc-definitely-missing/ca.pem";
+
+    const auto st = ws.open(config);
+    EXPECT_FALSE(st);
+    EXPECT_EQ(st.error(), xrtc::XRtcError::kSignalingFailed);
+}
+
+// 不需要服务端：allow_plaintext_ws=false 时 ws:// 必须在连接前被拒绝。
+// 用不可能连通的端口（9）证明拒绝发生在网络动作之前。
+TEST(JanusSignaling, RejectsPlaintextWhenTlsRequired) {
+    utils::worker_thread loop;
+    loop.start();
+    xrtc::JanusClient janus;
+    janus.move_to_thread(&loop);
+
+    xrtc::XRTCJoinConfig config;
+    config.janus_ws_url = "ws://127.0.0.1:9/janus";
+    config.allow_plaintext_ws = false;
+    config.signal_timeout_ms = 500;
+
+    const auto st = janus.Connect(config);
+    EXPECT_FALSE(st);
+    EXPECT_EQ(st.error(), xrtc::XRtcError::kInvalidParam);
+    janus.Disconnect();
 }
 
 // 需要“接受连接但从不回包”的 ws 服务端：设置 XRTC_WS_SILENT_URL 后运行。

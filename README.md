@@ -51,6 +51,8 @@ cmd /c "`"$vcvars`" && cmake -S . -B build/Debug -G Ninja -DCMAKE_BUILD_TYPE=Deb
 
 头文件在仓库 `include/xrtc/`。链接 `xrtc` 静态库即可，WebRTC / Boost / json / spdlog 对使用方隔离。
 
+完整接口说明（类型、方法、回调、线程约定、典型场景、已知差异）见 **[docs/api.md](docs/api.md)**。
+
 ## 在其他工程里链接本库
 
 本仓库提供静态库目标 `xrtc`，**没有** `find_package(xrtc)`，请用 `add_subdirectory` 把本仓库嵌进对方工程。对方同样必须用 **VS 2026（cl 19.51+）**、x64、`/MD` 或 `/MDd`。
@@ -107,9 +109,15 @@ F:\Qt\6.8.3\msvc2022_64\bin 加入 PATH 后运行 build\Debug\demo\webrtc_test.e
 
 - **信令线程**：`JanusClient` 的所有公开方法都投递到它自己的线程执行，
   不再从 WebRTC api 线程直接改 `session_id_` / `subscribe_state_`。
-- **WSS**：`wss://` 现在可用（BoringSSL），默认校验证书链与主机名；
-  域名按 SAN `dNSName` 校验，IP 按 SAN `iPAddress` 校验（IP 不在 SAN 里会失败）。
-  自签名证书用 `XRTC_CA_FILE` 指定 CA，或临时 `XRTC_TLS_VERIFY=0`。
+- **WSS**：`wss://` 可用（复用 `webrtc.lib` 内的 BoringSSL），默认校验证书链与目标身份。
+  域名按证书 SAN `dNSName` 校验（无 DNS SAN 时回落 `Subject CN`），IP 字面量按 SAN
+  `iPAddress` 校验；SNI 只对域名发送。自签名证书用 `XRTC_CA_FILE` 指定 CA，
+  或临时 `XRTC_TLS_VERIFY=0`。CA 解析优先级：`XRTCJoinConfig::ca_file` →
+  `XRTC_CA_FILE` → `SSL_CERT_FILE` → `CURL_CA_BUNDLE` → 系统默认。
+  传输层不再自己读环境变量，也不依赖 `X509_VERIFY_PARAM_set1_host`
+  （本 SDK 的 BoringSSL 里该接口会失败，导致 `wss://域名` 连不上）。
+- **强制加密**：新增 `XRTCJoinConfig::allow_plaintext_ws`（默认 true）。置 false 后
+  `ws://` 在连接前就被拒绝，`on_join_result` 收到 `kInvalidParam`；生产建议置 false。
 - **音频处理**：默认启用 AEC3 / 降噪(kHigh) / AGC(kAdaptiveDigital) / 高通，
   不再把 `audio_processing=nullptr` 交给工厂。
 - **ICE**：`ice_servers` 为空时**不再**静默回落 Google STUN，只用本地候选
@@ -128,7 +136,17 @@ F:\Qt\6.8.3\msvc2022_64\bin 加入 PATH 后运行 build\Debug\demo\webrtc_test.e
 ctest --test-dir build\Debug --output-on-failure          # 纯逻辑单测（不需要网络）
 ```
 
-WSS / 超时冒烟需要本地测试服务端（`build/wss_test_server.py` 只是本地测试脚本，不入库）：
+WSS / 超时冒烟需要本地测试服务端（`build/wss_test_server.py` 只是本地测试脚本，不入库）。
+
+**仓库不随带任何证书**：`cert.pem` / `key.pem` 是本地自签测试证书，生成到 `build/test-certs/`
+（`build/` 已被 gitignore，私钥不要提交）。首次或证书过期时执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests\certs\gen_test_certs.ps1   # 加 -Force 覆盖重建
+```
+
+脚本需要 openssl（默认找 Git for Windows 自带的），生成 CN=localhost、
+SAN=`DNS:localhost, IP:127.0.0.1, IP:::1`、默认 825 天的自签证书，同时当 CA 用。
 
 ```powershell
 python build\wss_test_server.py --mode echo   --port 8989 --cert build\test-certs\cert.pem --key build\test-certs\key.pem

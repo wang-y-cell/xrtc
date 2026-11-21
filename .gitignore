@@ -11,6 +11,6 @@ webrtc/lib_debug/
 third_party/json/
 third_party/boost-*/
 third_party/boost_*/
-docs/
+# docs/ 随代码入库（对外 API 与架构文档），不要再忽略
 *.log
 update_note.md

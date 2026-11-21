@@ -102,7 +102,9 @@ struct XRTCJoinConfig {
     /// kPreferRequested 且未单独指定时，沿用 engine 当前策略
     XRTCVideoSelectStrategy select_strategy =
         XRTCVideoSelectStrategy::kPreferRequested;
-    std::vector<XRTCIceServer> ice_servers;  /// 为空则使用默认 STUN
+    /// 为空时只用本地 host 候选（不内置任何公网 STUN）；
+    /// 需要 NAT 穿透请显式配置 STUN/TURN。
+    std::vector<XRTCIceServer> ice_servers;
     /// 单个 Janus 请求（create/attach/join/publish）的超时时间，毫秒。
     /// <=0 表示使用默认值 10000ms。超时后会话级请求整场失败，订阅级请求按路重试。
     uint32_t signal_timeout_ms = 10000;
@@ -110,7 +112,13 @@ struct XRTCJoinConfig {
     /// XRTC_CA_FILE / SSL_CERT_FILE / CURL_CA_BUNDLE，最后用 OpenSSL 默认路径。
     std::string ca_file;
     /// wss:// 是否校验证书。false 仅用于自签名证书联调，生产必须保持 true。
+    /// 开启时：域名按证书 SAN dNSName 校验（无 SAN 时回落到 Subject CN），
+    /// IP 字面量按 SAN iPAddress 校验。
     bool tls_verify = true;
+    /// 是否允许明文 ws://。置 false 后，ws:// 地址会在连接前被拒绝
+    /// （join 失败，on_join_result 收到 kInvalidParam），生产环境建议置 false
+    /// 强制加密。默认 true 仅用于与旧配置/内网自建服务保持兼容。
+    bool allow_plaintext_ws = true;
 };
 
 /// SDK / Rest<> 统一错误码

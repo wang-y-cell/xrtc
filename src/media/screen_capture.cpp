@@ -22,7 +22,10 @@ namespace xrtc {
 namespace {
 
 constexpr int kKeepAliveMs = 1000;
-constexpr int kMaxPreviewLongEdge = 640;
+/// 本地预览（observer->on_video_frame）长边上限，与推流分辨率无关。
+/// 会议客户端可能把预览当主画面显示，压到 640 会明显糊；
+/// 默认 1920，与摄像头预览共用同一常量（见 xrtc_defines.h）。
+constexpr int kMaxPreviewLongEdge = kXRtcLocalPreviewMaxLongEdge;
 
 /// 按长边上限计算输出宽高（保持比例、取偶数）。
 /// max_long_edge<=0 表示不缩放。
@@ -315,7 +318,7 @@ void ScreenCapture::capture_loop() {
             }
             if (preview) {
                 if (auto* observer = XRtcGlobal::instance().observer()) {
-                    // 本地预览只用于自看，压到 640 省 CPU；不影响推流分辨率
+                    // 预览尺寸只影响回调给上层的 I420，推流分辨率不变
                     webrtc::scoped_refptr<webrtc::I420BufferInterface> view_buf =
                         view;
                     const int long_edge =

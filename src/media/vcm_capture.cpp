@@ -1,4 +1,4 @@
-﻿#include <media/vcm_capture.h>
+#include <media/vcm_capture.h>
 
 #include <modules/video_capture/video_capture_factory.h>
 #include <rtc_base/logging.h>
@@ -313,8 +313,8 @@ void VcmCapture::OnFrame(const webrtc::VideoFrame& frame) {
         return;
     }
 
-    // 本地预览最长边压到 640，推流分辨率不变
-    constexpr int kMaxPreviewLongEdge = 640;
+    // 本地预览最长边（与采集上限一致），推流分辨率不变
+    constexpr int kMaxPreviewLongEdge = kXRtcLocalPreviewMaxLongEdge;
     const int long_edge = std::max(width, height);
     if (long_edge > kMaxPreviewLongEdge) {
         int pw = width;

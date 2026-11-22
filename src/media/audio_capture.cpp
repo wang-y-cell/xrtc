@@ -1,4 +1,5 @@
 #include <media/audio_capture.h>
+#include <media/audio_level.h>
 #include <media/device_enum_utils.h>
 
 #include <algorithm>
@@ -23,33 +24,10 @@ int64_t NowMs() {
         .count();
 }
 
-///把一帧 16-bit PCM 转成 0～100 的音量值，给进度条用
+///把一帧 16-bit PCM 转成 0～100 的音量值，给进度条用。
+///公式统一在 <media/audio_level.h>，远端说话检测用同一套刻度。
 int LevelFromPcm16(const int16_t* samples, size_t count) {
-    //空数据返回0
-    if (!samples || count == 0) {
-        return 0;
-    }
-    double sum_sq = 0.0;
-    //峰值
-    int peak = 0;
-    //遍历这一帧的每个采样点，算出峰值和平方和
-    for (size_t i = 0; i < count; ++i) {
-        const int v = samples[i];
-        const int a = v >= 0 ? v : -v;
-        if (a > peak) {
-            peak = a;
-        }
-        //平方和
-        sum_sq += static_cast<double>(v) * static_cast<double>(v);
-    }
-    //均方根
-    const double rms = std::sqrt(sum_sq / static_cast<double>(count));
-    //混合音量,多看平均响度，也兼顾瞬间大声
-    const double mixed = 0.7 * rms + 0.3 * static_cast<double>(peak);
-    //转换为0～100的音量值
-    // 32768 是 16-bit 的峰值，1.8 是放大系数，让音量看起来更明显
-    //clamp 是限制在0～100之间
-    return std::clamp(static_cast<int>(mixed / 32768.0 * 100.0 * 1.8), 0, 100);
+    return AudioLevelFromPcm16(samples, count);
 }
 
 webrtc::Thread* AdmWorker() {

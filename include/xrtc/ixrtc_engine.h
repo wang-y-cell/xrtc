@@ -44,6 +44,21 @@ public:
         (void)audio_source;
         (void)level;
     }
+
+    /// 远端音量 0~100（按 feed 区分，约每 level_interval_ms 一次，含静音时的 0）。
+    /// 用于音量条；只关心"谁在说话"时用下面的 on_remote_talking 更省事。
+    virtual void on_remote_audio_level(uint64_t feed_id, int level) {
+        (void)feed_id;
+        (void)level;
+    }
+
+    /// 远端是否在说话：由远端音量 + 迟滞(threshold/release_ms)判定，
+    /// 只在状态切换时回调（不说话 -> 说话、说完 -> 静音）。
+    /// 远端静音/断流时由看门狗定时降级，因此一定会收到收尾的 false。
+    virtual void on_remote_talking(uint64_t feed_id, bool talking) {
+        (void)feed_id;
+        (void)talking;
+    }
 };
 
 class IXRtcEngine {
@@ -85,6 +100,12 @@ public:
     virtual void set_screen_share_config(
         const XRTCScreenShareConfig& config) = 0;
     virtual XRTCScreenShareConfig get_screen_share_config() const = 0;
+
+    /// 设置/读取远端说话检测参数（阈值 / 防抖 / 音量回调间隔）。
+    /// 会中修改对已订阅的远端立即生效；进房前设置则本次会话沿用。
+    virtual void set_voice_activity_config(
+        const XRTCVoiceActivityConfig& config) = 0;
+    virtual XRTCVoiceActivityConfig get_voice_activity_config() const = 0;
 
     virtual IXRtcMediaSource* create_video_source(
         const ixrtc_video_config& video_config) = 0;

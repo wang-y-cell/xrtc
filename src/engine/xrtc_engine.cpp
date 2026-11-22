@@ -210,6 +210,21 @@ XRTCScreenShareConfig XRtcEngine::get_screen_share_config() const {
         [this]() -> XRTCScreenShareConfig { return screen_share_config_; });
 }
 
+void XRtcEngine::set_voice_activity_config(
+    const XRTCVoiceActivityConfig& config) {
+    XRtcGlobal::instance().api_thread()->BlockingCall([this, config]() {
+        voice_activity_config_ = config;
+        if (call_session_) {
+            call_session_->SetVoiceActivityConfig(config);
+        }
+    });
+}
+
+XRTCVoiceActivityConfig XRtcEngine::get_voice_activity_config() const {
+    return XRtcGlobal::instance().api_thread()->BlockingCall(
+        [this]() -> XRTCVoiceActivityConfig { return voice_activity_config_; });
+}
+
 IXRtcMediaSource* XRtcEngine::create_video_source(
     const ixrtc_video_config& video_config
 ) {
@@ -309,6 +324,8 @@ void XRtcEngine::join(const XRTCJoinConfig& config) {
         }
         // 屏幕共享画质随会话保存；进房前设置也生效
         call_session_->SetScreenShareConfig(screen_share_config_);
+        // 远端说话检测参数同理（阈值/防抖/音量回调间隔）
+        call_session_->SetVoiceActivityConfig(voice_activity_config_);
         call_session_->Start(cfg);
     });
 }

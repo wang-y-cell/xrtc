@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -8,6 +9,7 @@
 #include "api/media_stream_interface.h"
 #include "concurrency/signal_and_slots.h"
 #include <janus/janus_client.h>
+#include <media/remote_audio_level_sink.h>
 #include <media/remote_video_sink.h>
 #include <media/audio_capture.h>
 #include <media/screen_capture.h>
@@ -72,6 +74,9 @@ public:
     /// 更新屏幕共享画质（采集参数下次 start_local_screen 生效；
     /// 远端渲染上限对新订阅生效）
     void SetScreenShareConfig(const XRTCScreenShareConfig& config);
+
+    /// 更新远端说话检测参数（对已订阅的远端立即生效）
+    void SetVoiceActivityConfig(const XRTCVoiceActivityConfig& config);
 
     /// 本地摄像头硬件是否正在采集
     bool local_video_capturing() const { return local_video_capturing_; }
@@ -159,10 +164,16 @@ private:
         webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track);
     /// 仅卸该 feed 的远端视频 sink
     void detachRemoteVideo(uint64_t feed_id);
+    /// 仅卸该 feed 的远端音频 sink 与轨引用
+    void detachRemoteAudio(uint64_t feed_id);
     /// 卸该 feed 的远端音视频
     void detachRemoteMedia(uint64_t feed_id);
     /// 卸所有远端音视频
     void detachAllRemoteMedia();
+    /// 启动远端说话检测看门狗（每 tick 推进一次；会话结束随世代号自动停）
+    void scheduleVoiceActivityTick();
+    /// 遍历已订阅的远端音频 sink，推进静音判定
+    void tickVoiceActivity();
     /// 将 pending_remote_ice_by_handle_ 中该 handle 的候选加入已建好的 subscriber PC
     /// 客户端创建好pc之后,查看是否有保存的janus发送的trickle,如果有,则加入ice候选
     void flushPendingRemoteIce(uint64_t handle_id);
@@ -172,6 +183,8 @@ private:
     XRTCJoinConfig config_;
     /// 屏幕共享画质：采集上限 / 帧率 / 码率 / 远端渲染上限
     XRTCScreenShareConfig screen_config_;
+    /// 远端说话检测参数（阈值 / 防抖 / 音量回调间隔）
+    XRTCVoiceActivityConfig voice_cfg_;
     /// 进房/退房/失败世代与通知决策
     SessionLifecycle life_;
 
@@ -222,9 +235,17 @@ private:
     std::unordered_map<uint64_t,
                        webrtc::scoped_refptr<webrtc::AudioTrackInterface>>
         remote_audio_tracks_;
+    /// feed → 远端音量/说话检测 sink（挂在 audio track 上，随轨解绑）
+    std::unordered_map<uint64_t, std::unique_ptr<RemoteAudioLevelSink>>
+        remote_audio_sinks_;
 
     /// 单路订阅 ICE/PC 失败后的最大自动重试次数
     static constexpr int kMaxSubscriberRetries = 3;
+    /// 远端说话检测看门狗周期（毫秒）
+    static constexpr int kVoiceActivityTickMs = 200;
+    /// 析构标记：延迟任务（看门狗）醒来时先查它，避免访问已释放的 this
+    std::shared_ptr<std::atomic<bool>> alive_ =
+        std::make_shared<std::atomic<bool>>(true);
 };
 
 }  // namespace xrtc

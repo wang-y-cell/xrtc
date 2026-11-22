@@ -409,6 +409,8 @@ add_library(xrtc STATIC
     src/pc/peer_connection.cpp
     src/media/video_track_source.cpp
     src/media/remote_video_sink.cpp
+    src/media/remote_audio_level_sink.cpp
+    src/media/voice_activity_detector.cpp
     src/media/vcm_capture.cpp
     src/media/screen_capture.cpp
     src/platform/screen_grabber.cpp
@@ -533,6 +535,7 @@ if(BUILD_XRTC_TESTS)
         tests/video_select_strategy_test.cpp
         tests/subscribe_state_test.cpp
         tests/session_lifecycle_test.cpp
+        tests/voice_activity_test.cpp
         tests/websocket_tls_test.cpp
         tests/screen_capture_smoke.cpp
     )

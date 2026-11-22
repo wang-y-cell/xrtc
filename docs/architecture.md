@@ -133,6 +133,7 @@ sequenceDiagram
 | **PeerConnectionHandler** | 单个 PeerConnection（SDP/ICE/Track） |
 | **VcmCapture / VideoTrackSource** | 本地摄像头 → 视频轨 |
 | **RemoteVideoSink** | 远端轨 → ARGB → Observer |
+| **RemoteAudioLevelSink** | 远端音频 PCM → 音量/说话判定 → Observer（200ms 看门狗兜底） |
 
 ---
 

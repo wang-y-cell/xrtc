@@ -42,6 +42,9 @@ public:
         const XRTCScreenShareConfig& config) override;
     XRTCScreenShareConfig get_screen_share_config() const override;
 
+    void set_voice_activity_config(const XRTCVoiceActivityConfig& config) override;
+    XRTCVoiceActivityConfig get_voice_activity_config() const override;
+
     IXRtcMediaSource* create_video_source(
         const ixrtc_video_config& video_config) override;
     void destroy_video_source(IXRtcMediaSource* video_source) override;
@@ -70,6 +73,8 @@ private:
     XRTCVideoCaptureRequest video_capture_request_;
     /// 屏幕共享画质（跨会话保存，join 时同步给 CallSession）
     XRTCScreenShareConfig screen_share_config_;
+    /// 远端说话检测参数（跨会话保存，join 时同步给 CallSession）
+    XRTCVoiceActivityConfig voice_activity_config_;
     webrtc::scoped_refptr<XrtcAudioDeviceModule> audio_device_;
     std::unique_ptr<CallSession> call_session_;
     /// leave/destroy 递增，作废已排队的 join PostTask

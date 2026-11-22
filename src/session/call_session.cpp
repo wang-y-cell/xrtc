@@ -13,6 +13,19 @@
 #include <vector>
 
 namespace xrtc {
+namespace {
+
+/// 公开配置 → 内部检测器参数（检测器自己也会再做一次范围收敛）
+VoiceActivityDetector::Params ToDetectorParams(
+    const XRTCVoiceActivityConfig& config) {
+    VoiceActivityDetector::Params params;
+    params.talking_threshold = config.talking_threshold;
+    params.release_ms = config.release_ms;
+    params.level_interval_ms = config.level_interval_ms;
+    return params;
+}
+
+}  // namespace
 
 CallSession::CallSession() {
     // 新 utils：亲和绑 utils::thread*；跨线程需目标 loop 在泵，否则 emit 会丢。
@@ -27,6 +40,10 @@ CallSession::CallSession() {
 }
 
 CallSession::~CallSession() {
+    // 先断看门狗：延迟任务醒来会查这个标记，不会碰已释放的成员
+    if (alive_) {
+        alive_->store(false);
+    }
     invalidate();
     Stop();
     janus_conns_.clear();
@@ -766,6 +783,22 @@ void CallSession::SetScreenShareConfig(const XRTCScreenShareConfig& config) {
         config.remote_max_long_edge);
 }
 
+void CallSession::SetVoiceActivityConfig(const XRTCVoiceActivityConfig& config) {
+    voice_cfg_ = config;
+    const auto params = ToDetectorParams(config);
+    for (auto& [feed_id, sink] : remote_audio_sinks_) {
+        (void)feed_id;
+        if (sink) {
+            sink->set_params(params);
+        }
+    }
+    spdlog::info(
+        "[session] voice activity config: threshold={} release_ms={} "
+        "level_interval_ms={} (applied to {} remote track(s))",
+        params.talking_threshold, params.release_ms, params.level_interval_ms,
+        remote_audio_sinks_.size());
+}
+
 Rest<> CallSession::StartLocalVideo() {
     auto run = [this]() -> Rest<> {
         if (!capture_) {
@@ -1227,6 +1260,8 @@ slots_t<> CallSession::onJoinedAsPublisher() {
         if (!life_.active) {
             return;
         }
+        // 远端说话检测看门狗：对端静音/断流时把 talking 降级为 false
+        scheduleVoiceActivityTick();
         spdlog::info("[session] notify join success");
         notifyJoinResult(XRtcError::kNOERROR, "joined");
     });
@@ -1271,9 +1306,23 @@ void CallSession::detachRemoteVideo(uint64_t feed_id) {
     }
 }
 
+void CallSession::detachRemoteAudio(uint64_t feed_id) {
+    auto sink_it = remote_audio_sinks_.find(feed_id);
+    if (sink_it != remote_audio_sinks_.end()) {
+        if (auto track_it = remote_audio_tracks_.find(feed_id);
+            track_it != remote_audio_tracks_.end() && track_it->second) {
+            track_it->second->RemoveSink(sink_it->second.get());
+        }
+        // 正在说话时解绑：补一次 talking=false，避免 UI 一直高亮
+        sink_it->second->NotifyDetached();
+        remote_audio_sinks_.erase(sink_it);
+    }
+    remote_audio_tracks_.erase(feed_id);
+}
+
 void CallSession::detachRemoteMedia(uint64_t feed_id) {
     detachRemoteVideo(feed_id);
-    remote_audio_tracks_.erase(feed_id);
+    detachRemoteAudio(feed_id);
 }
 
 void CallSession::detachAllRemoteMedia() {
@@ -1282,7 +1331,49 @@ void CallSession::detachAllRemoteMedia() {
         att.Detach();
     }
     remote_videos_.clear();
+    for (auto& [id, sink] : remote_audio_sinks_) {
+        if (auto track_it = remote_audio_tracks_.find(id);
+            track_it != remote_audio_tracks_.end() && track_it->second) {
+            track_it->second->RemoveSink(sink.get());
+        }
+        if (sink) {
+            sink->NotifyDetached();
+        }
+    }
+    remote_audio_sinks_.clear();
     remote_audio_tracks_.clear();
+}
+
+void CallSession::scheduleVoiceActivityTick() {
+    const uint64_t gen = life_.generation;
+    auto alive = alive_;
+    XRtcGlobal::instance().api_thread()->PostDelayedTask(
+        [this, gen, alive]() {
+            // 会话已析构：直接停下，不再碰 this
+            if (!alive || !alive->load(std::memory_order_acquire)) {
+                return;
+            }
+            // 会话已结束/换代：链条自然停下（leave、失败、远端全断都走这里）
+            if (!isCurrentGeneration(gen)) {
+                return;
+            }
+            tickVoiceActivity();
+            scheduleVoiceActivityTick();
+        },
+        webrtc::TimeDelta::Millis(kVoiceActivityTickMs));
+}
+
+void CallSession::tickVoiceActivity() {
+    if (remote_audio_sinks_.empty()) {
+        return;
+    }
+    const int64_t now = webrtc::TimeMillis();
+    for (auto& [feed_id, sink] : remote_audio_sinks_) {
+        (void)feed_id;
+        if (sink) {
+            sink->TickSilence(now);
+        }
+    }
 }
 
 void CallSession::attachRemoteTrack(
@@ -1299,6 +1390,22 @@ void CallSession::attachRemoteTrack(
             webrtc::scoped_refptr<webrtc::AudioTrackInterface>(
                 static_cast<webrtc::AudioTrackInterface*>(track.get()));
         audio->set_enabled(true);
+        // 同一 feed 重新绑音频（订阅重试）时先摘旧 sink，避免重复回调
+        detachRemoteAudio(feed_id);
+        auto sink = std::make_unique<RemoteAudioLevelSink>(
+            feed_id, ToDetectorParams(voice_cfg_),
+            [](uint64_t id, int level) {
+                if (auto* obs = XRtcGlobal::instance().observer()) {
+                    obs->on_remote_audio_level(id, level);
+                }
+            },
+            [](uint64_t id, bool talking) {
+                if (auto* obs = XRtcGlobal::instance().observer()) {
+                    obs->on_remote_talking(id, talking);
+                }
+            });
+        audio->AddSink(sink.get());
+        remote_audio_sinks_[feed_id] = std::move(sink);
         remote_audio_tracks_[feed_id] = std::move(audio);
         spdlog::info("[session] remote audio attached, feed={}", feed_id);
         return;

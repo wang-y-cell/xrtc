@@ -270,6 +270,18 @@ if (!st) {
 | `feed_id` | 远端这一路流的唯一 ID，**渲染/区分多路都靠它** |
 | `display` | 对端的 `display_name`；可能为空 |
 
+### 3.7 XRTCVoiceActivityConfig（远端说话检测）
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `talking_threshold` | 15 | 0~100，瞬时音量 ≥ 该值立即算"在说话" |
+| `release_ms` | 600 | 低于阈值后要持续这么久才判"说完"，防止字间闪断 |
+| `level_interval_ms` | 100 | `on_remote_audio_level` 的最小回调间隔；`<=0` 表示每帧都报 |
+
+判定是"音量 + 迟滞"：起说立即、说完要等 `release_ms`；音量按时间衰减
+（约 170ms 从 100 掉到 0），不会因为一帧大声就卡住。参数越界会被收敛
+（阈值 1~100，其余 0~10s / 0~2s），由 `set_voice_activity_config` 设置。
+
 ---
 
 ## 4. 接口详解
@@ -304,6 +316,7 @@ void destroy_xrtc_engine(IXRtcEngine* engine);
 | `XRTCVideoFormat select_video_format(device_id, requested, strategy)` | 按策略在设备能力里选出"最终会用的格式"，建议在创建源/进房前调，用于 UI 显示真实分辨率；能力为空时原样返回 `requested` |
 | `void set_video_capture_request(request)` / `XRTCVideoCaptureRequest get_video_capture_request() const` | 读写引擎级默认采集请求 |
 | `void set_screen_share_config(config)` / `XRTCScreenShareConfig get_screen_share_config() const` | 读写屏幕共享画质；会议中设置也会下发到当前会话 |
+| `void set_voice_activity_config(config)` / `XRTCVoiceActivityConfig get_voice_activity_config() const` | 读写远端说话检测参数（阈值/防抖/音量回调间隔）；会中修改对已订阅的远端立即生效 |
 
 ### 4.4 预览媒体源
 
@@ -383,7 +396,9 @@ void destroy_xrtc_engine(IXRtcEngine* engine);
 | `video_source_stop_event(source, error)` | 采集源 `stop()` 完成 | 同上 | 同上 |
 | `on_video_frame(source, frame)` | 本地采集出帧（预览源开始采集后；会议内本端采集） | 采集线程 | `frame` 仅回调期间有效；**必须尽快返回** |
 | `on_remote_video_frame(feed_id, frame)` | 收到远端视频帧 | WebRTC 视频线程 | 多路用 `feed_id` 区分；按 `render_time_ms` 调度渲染 |
-| `on_audio_level(source, level)` | 本地麦克风音量变化，`level` 0~100 | 采集线程 | 无远端音量回调 |
+| `on_remote_audio_level(feed_id, level)` | 远端音量变化，`level` 0~100 | WebRTC 音频线程 | 约每 `level_interval_ms`(默认 100ms) 一次，静音时也报 0；适合做音量条 |
+| `on_remote_talking(feed_id, talking)` | 远端"开始/结束说话"切换 | WebRTC 音频线程 | 只在状态变化时回调；远端静音/断流会由看门狗补一次 `false` |
+| `on_audio_level(source, level)` | 本地麦克风音量变化，`level` 0~100 | 采集线程 | 与远端音量共用同一刻度公式 |
 | `on_join_result(error, message)` | `join` 成功/失败 | WebRTC API 线程 | `ok` 只代表本地已就绪并发出 offer；失败时 `message` 可用于展示 |
 | `on_leave(error)` | 主动 `leave`、信令断开、ICE 失败等会话终止 | WebRTC API 线程 | 与 `on_join_result` 二选一语义：进房成功后才会走这里 |
 | `on_connection_state(state)` | **Publisher PC** 连接状态变化 | WebRTC 线程 | 订阅侧失败只以 `on_leave(kPeerConnectionFailed)` 体现 |
@@ -463,6 +478,36 @@ preview = nullptr;
 
 engine->join(cfg);
 ```
+
+### 6.7 谁在说话（远端音量 / 说话高亮）
+
+```cpp
+// 可选：进房前或会中调整判定参数
+xrtc::XRTCVoiceActivityConfig va;
+va.talking_threshold = 20;   // 更灵敏 -> 调小
+va.release_ms = 800;         // 更稳 -> 调大
+engine->set_voice_activity_config(va);
+
+// 观察者里二选一（也可以两个都用）：
+void on_remote_talking(uint64_t feed_id, bool talking) override {
+    // 建议：此处只更新状态，切到 UI 线程再改控件
+    highlight_speaker(feed_id, talking);
+}
+
+void on_remote_audio_level(uint64_t feed_id, int level) override {
+    // 0~100，可直接喂音量条；静音时也会以 interval 上报 0
+    update_remote_meter(feed_id, level);
+}
+```
+
+要点：
+
+- "谁在说话"用 `on_remote_talking` 最省事：只在切换时回调，UI 不用自己防抖；
+  `feed_id` 就是 `on_remote_user_joined` 里拿到的那个，和视频渲染一一对应。
+- 需要渐变的音量动画（比如说话时头像光晕强度）再用 `on_remote_audio_level`。
+- 远端 mute / 断流后不会一直停在"说话中"：看门狗每 200ms 推进一次，
+  `release_ms` 到期补 `talking=false`；该 feed 被移除时也会补一次 `false`。
+- 两个回调都来自 WebRTC 音频线程，**不要在里面直接改 UI**。
 
 ---
 

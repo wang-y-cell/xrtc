@@ -42,6 +42,8 @@ private:
         QLabel* name_label = nullptr;
         YuvGlWidget* gl = nullptr;
         QString display;
+        /// 远端是否正在说话（标题上加“（说话中）”）
+        bool talking = false;
     };
 
     struct RemotePending {
@@ -61,6 +63,8 @@ private:
     void ensure_remote_view(uint64_t feed_id, const QString& display);
     void remove_remote_view(uint64_t feed_id);
     void clear_all_remote_views();
+    /// 按 display + talking 刷新远端标题（UI 线程）
+    void refresh_remote_label(uint64_t feed_id);
     void render_preview_frame();
     void render_remote_preview_frame(uint64_t feed_id);
     xrtc::XRTCVideoCaptureRequest current_video_request() const;
@@ -73,6 +77,8 @@ private:
                                  xrtc::XRtcError error) override;
     void on_video_frame(xrtc::IXRtcMediaSource* video_source,
                         const xrtc::XRTCVideoFrame& frame) override;
+    /// 远端说话状态（SDK 按远端音量 + 迟滞判定）
+    void on_remote_talking(uint64_t feed_id, bool talking) override;
     void on_join_result(xrtc::XRtcError error,
                         const std::string& message) override;
     void on_leave(xrtc::XRtcError error) override;

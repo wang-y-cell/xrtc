@@ -48,6 +48,16 @@ struct XRTCScreenShareConfig {
     int remote_max_long_edge = 0;
 };
 
+/// 远端说话检测参数（驱动 on_remote_audio_level / on_remote_talking）
+struct XRTCVoiceActivityConfig {
+    /// 0~100：瞬时音量 >= 该值即算“在说话”，默认 15
+    int talking_threshold = 15;
+    /// 音量低于阈值后，持续多少毫秒才判为“说完”（防字间闪断），默认 600
+    int release_ms = 600;
+    /// on_remote_audio_level 的最小回调间隔（毫秒），<=0 表示每帧都报，默认 100
+    int level_interval_ms = 100;
+};
+
 ///视频配置,包括视频宽度、视频高度、视频帧率、设备ID
 struct ixrtc_video_config {
     int width = 0;            /// 0 表示使用 engine 当前采集请求

@@ -289,7 +289,7 @@ void Widget::ensure_remote_view(uint64_t feed_id, const QString& display) {
     if (it != remote_views_.end()) {
         if (!display.isEmpty() && it->second.name_label) {
             it->second.display = display;
-            it->second.name_label->setText(display);
+            refresh_remote_label(feed_id);
         }
         return;
     }
@@ -1032,3 +1032,30 @@ void Widget::on_audio_level(xrtc::IXRtcMediaSource* /*audio_source*/,
         },
         Qt::QueuedConnection);
 }
+
+void Widget::refresh_remote_label(uint64_t feed_id) {
+    auto it = remote_views_.find(feed_id);
+    if (it == remote_views_.end() || !it->second.name_label) {
+        return;
+    }
+    it->second.name_label->setText(
+        it->second.talking
+            ? it->second.display + QString::fromUtf8("（说话中）")
+            : it->second.display);
+}
+
+void Widget::on_remote_talking(uint64_t feed_id, bool talking) {
+    // SDK 的该回调来自音频线程，切回 UI 线程再动控件
+    QMetaObject::invokeMethod(
+        this,
+        [this, feed_id, talking]() {
+            auto it = remote_views_.find(feed_id);
+            if (it == remote_views_.end()) {
+                return;
+            }
+            it->second.talking = talking;
+            refresh_remote_label(feed_id);
+        },
+        Qt::QueuedConnection);
+}
+

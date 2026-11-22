@@ -120,6 +120,11 @@ F:\Qt\6.8.3\msvc2022_64\bin 加入 PATH 后运行 build\Debug\demo\webrtc_test.e
   `ws://` 在连接前就被拒绝，`on_join_result` 收到 `kInvalidParam`；生产建议置 false。
 - **音频处理**：默认启用 AEC3 / 降噪(kHigh) / AGC(kAdaptiveDigital) / 高通，
   不再把 `audio_processing=nullptr` 交给工厂。
+- **远端说话检测**：新增 `on_remote_audio_level(feed_id, 0~100)` 与
+  `on_remote_talking(feed_id, bool)`。基于远端 PCM 的 RMS+峰值算音量，音量按时间衰减；
+  talking 用 release 迟滞防字间闪断，参数由 `XRTCVoiceActivityConfig` 控制
+  （阈值 15 / 释放 600ms / 音量回调 100ms）。对端静音或断流时由 200ms 看门狗补
+  `talking=false`，解绑 feed 也会补一次，UI 不会一直高亮。
 - **ICE**：`ice_servers` 为空时**不再**静默回落 Google STUN，只用本地候选
   （同一网段可用）；跨网段请显式配置 `XRTC_ICE_URLS`。
 - **请求超时**：create / attach / join / publish / 订阅 join 都有超时。
